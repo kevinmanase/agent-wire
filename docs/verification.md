@@ -9,24 +9,29 @@ restarts, single broker ownership, private file modes, registration rotation,
 message authorization, idempotency, bounded inbox pages, receipt races,
 offline recovery, and uncertain delivery without replay.
 
-A separate live test enrolled an existing Codex thread and an isolated Claude
-Code print-mode session with only Agent Wire's MCP tools available. The broker
-submitted a Codex-origin message through Claude's real peer inbox. Claude
-started processing it, but its account reported a weekly usage limit, so a
-model-generated reply could not be verified.
+A live test used the installed Agent Wire package and a persistent user
+service. Codex loaded the shared MCP server into an existing conversation.
+A fresh Claude Code print-mode session enrolled itself through the installed
+SessionStart hook and verified its own credential with `agents_list`.
 
-A test client then used the Claude fixture's **actual bound MCP server** to
-acknowledge that message and send a correlated, explicitly synthetic reply.
-The reply arrived in the running Codex conversation as
-`agent_wire.message_receive` tool output. Codex acknowledged receipt; the
-broker recorded the original as `replied` and the response as `acknowledged`.
-The temporary enrollments were retired and fixture processes stopped afterward.
-No user conversation was cleared.
+Codex sent a message with the actual `message_send` MCP tool. The broker
+delivered it through Claude's real peer inbox. **Claude's model** called
+`message_ack` and generated a correlated `message_send` reply using its own
+hook-provided credential. That reply arrived in the running Codex conversation
+as `agent_wire.message_receive` tool output. Codex called the MCP
+`message_ack` tool; the original message became `replied` and the response
+became `acknowledged`.
 
-This verifies both native transport endpoints and the shared MCP return path.
-It does **not** establish a successful autonomous Claude model reply, native
-compatibility on macOS, or compatibility with other runtime versions. Those
-are useful follow-up contributions; keep the distinction in test reports.
+The Claude fixture had only Agent Wire's MCP tools available and explicitly
+accepted peer messages for that test session. The temporary enrollment was
+retired and fixture process stopped afterward. The installed broker remained
+running. No user conversation was cleared or restarted.
+
+This verifies both native endpoints, real model-generated replies, shared
+unbound MCP configuration, and automatic Claude enrollment. Codex's hook
+definition was discovered but left pending its normal user trust review;
+the live Codex session was enrolled explicitly. Native compatibility on
+macOS and compatibility with other runtime versions still need live checks.
 
 To repeat a live test, use a fresh private state directory and explicit
 session enrollment. Configure the receiving runtime's normal permissions for

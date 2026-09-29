@@ -116,7 +116,7 @@ python3 -m venv .venv
 Tests use isolated state and fake runtime sockets; no accounts, API keys, or
 model calls are required. Live runtime checks are separate, explicit exercises.
 See [initial verification](docs/verification.md) for the tested native paths
-and the remaining model-reply limitation.
+and a successful live Codex → Claude → Codex exchange.
 Contributions to adapters, cross-platform support, and delivery semantics are
 welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
