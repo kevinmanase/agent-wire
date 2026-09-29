@@ -100,6 +100,21 @@ async def test_cli_roundtrip_restart_permissions_and_single_owner():
                 assert "session_handle" not in result
                 identities.append(str(path))
             alice, bob = identities
+            await cli(
+                state,
+                "report",
+                "--identity",
+                alice,
+                "--task",
+                "CLI registry test",
+                "--status",
+                "blocked",
+                "--detail",
+                "Need review",
+            )
+            sessions = await cli(state, "sessions", "--status", "blocked")
+            assert len(sessions["sessions"]) == 1
+            assert sessions["sessions"][0]["name"] == "alice"
             message = await cli(
                 state,
                 "send",
@@ -114,6 +129,8 @@ async def test_cli_roundtrip_restart_permissions_and_single_owner():
             )
             await stop_broker(process)
             process = await start_broker(state)
+            sessions = await cli(state, "sessions", "--status", "blocked")
+            assert sessions["sessions"][0]["report"]["task"] == "CLI registry test"
             inbox = await cli(state, "inbox", "--identity", bob)
             assert inbox["messages"][0]["id"] == message["id"]
             duplicate = await cli(

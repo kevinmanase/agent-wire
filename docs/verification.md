@@ -1,4 +1,4 @@
-# Initial verification
+# Verification
 
 Checked on 2026-09-29 with Python 3.14 on Linux, Codex app-server 0.159.0,
 Claude Code 2.1.280, MCP Python SDK 2.2.0, and websockets 17.1.
@@ -33,6 +33,29 @@ session was enrolled explicitly. Its enrollment hook was also checked locally,
 reviewed by the user through `/hooks`, and confirmed enabled and trusted by
 the running daemon. Native compatibility on macOS and compatibility with
 other runtime versions still need live checks.
+
+## Shared work registry (0.2.0)
+
+The expanded suite passes **68 tests**, including ownership of reports,
+freshness with a controlled clock, paginated response-size limits, persistence,
+retirement, hook identity reuse, resume endpoint refresh, and suppression of
+Claude child hooks. Lint, formatting, wheel, and source-distribution builds
+also pass locally.
+
+A second live check used the installed 0.2.0 package and an isolated Claude
+session with only `sessions_list` and `session_update` enabled. Codex published
+its own task through MCP. Claude's model read it, published its own working
+and waiting reports using its hook-provided credential, then read Codex's
+updated report and published done. Codex read both versions from the same
+shared list. The fixture enrollment was retired and only that test process
+was stopped afterward. Existing real Claude sessions also began publishing
+their own task reports through the installed reporting integration.
+
+The running Codex app-server loaded version 0.2.0 with both new tools, and the
+current Codex conversation successfully called `session_update`. New Codex
+hook definitions still require the user's native `/hooks` review; manual/MCP
+reporting does not require those hooks. This is a shared list of enrolled,
+self-reporting sessions, not proof of coverage of every running process.
 
 To repeat a live test, use a fresh private state directory and explicit
 session enrollment. Configure the receiving runtime's normal permissions for

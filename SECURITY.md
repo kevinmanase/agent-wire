@@ -13,6 +13,10 @@ filesystem privileges.
 - Each enrollment has a random credential; SQLite stores its hash. Operations
   use that identity rather than a caller-supplied sender name. Only message
   participants can inspect message state; only its recipient can acknowledge it.
+- Work reports can be replaced only with the owning session's credential.
+  The read-only session directory is visible to the local OS user and all its
+  participating agents. Reports are peer data, not trusted instructions or
+  verified task evidence. Staleness does not prove completion or process exit.
 - Native destinations are explicit session IDs and sockets. The adapter checks
   current runtime state before delivery. It never attaches to historical
   conversations, resets tabs, or reassigns queued messages to a new enrollment.
@@ -28,11 +32,15 @@ filesystem privileges.
 
 ## Data
 
-Messages, paths, names, and receipts are stored in local SQLite **without
+Messages, work reports, paths, names, and receipts are stored in local SQLite **without
 application-level encryption**. Identities contain private credentials. Native
 delivery also places message content in the receiving runtime's conversation
 and may send it to that runtime's model provider under your existing setup.
 Agent Wire itself does not call a model API or send telemetry.
+Agents may send the shared work list to their model provider when reading it.
+Hooks do not copy raw prompts or transcripts into reports. Agents should publish
+brief summaries without secrets. Reports from retired enrollments remain in
+the database even though they are excluded from the active directory.
 
 The alpha does not automatically prune message history. Expiry stops pending
 delivery and acknowledgement; it does not erase stored content. Protect state

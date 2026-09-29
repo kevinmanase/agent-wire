@@ -1,6 +1,6 @@
 # Protocol and native adapters
 
-The public API is the five MCP tools described in the README. The broker's
+The public API is the seven MCP tools described in the README. The broker's
 local protocol is version 1: one newline-terminated JSON request and response
 per Unix socket connection. A request is `{"method": "...", "params": {...}}`;
 a response is `{"result": ...}` or `{"error": {"code": "...", "message": "..."}}`.
@@ -18,7 +18,40 @@ Discovery is read-only. Enrollment is a local-user administrative operation;
 it validates that a native target is currently loaded. MCP tools cannot enroll
 arbitrary targets. A bound MCP process reads one private identity file. An
 unbound process requires the calling conversation's own `session_handle` on
-each operation. Never bind a shared app-scoped process to one conversation.
+authenticated operation. `sessions_list` is read-only and available without
+a session credential through the private socket. Never bind a shared
+app-scoped process to one conversation.
+
+## Session reports
+
+`session_update` replaces the authenticated caller's report, with required
+`task` and `status` (`working`, `waiting`, `blocked`, `idle`, `done`). Optional
+`detail`, `repository`, `branch`, and `ticket` default to empty strings and
+replace prior values. Limits in UTF-8 bytes are task 512, detail 2048,
+repository 4096, branch 256, and ticket 256. The server sets `reported_at` and
+`last_seen` using receipt time; callers cannot choose an owner or timestamps.
+
+`sessions_list` returns active enrollment metadata plus `report` (null until
+published), `activity`, `last_seen`, `age_seconds`, and `freshness`
+(`unseen`, `fresh`, `stale`). No endpoint, credential, prompt, or transcript is
+returned. Filters are `runtime`, `status` (including `unreported`), and
+`include_stale` (default true). Pages use an enrollment-ID `after` cursor,
+`limit` 1–100 (default 50), and a 512 KiB encoded-entry budget. Follow
+`next_after` until null. Concurrent registrations may require a new scan.
+
+Hook-only `session_heartbeat` updates activity and last contact, leaving task
+state and `reported_at` intact. `new_turn` marks an existing report as needing
+an update; only a new `session_update` clears that marker. `session_refresh`
+revalidates the caller's own native endpoint when a context hook runs, allowing
+a resumed conversation to keep its identity and report at a new inbox socket.
+It cannot select a different native session. These methods are not MCP tools.
+
+Reports are claims by agents. Hooks do not infer summaries or completion, and
+the broker does not keep agents fresh on their behalf. At 300 seconds without
+contact an entry becomes stale. A stale entry stays visible; it is not proof
+of process exit or task completion. A stopped turn sets activity to idle and
+preserves a waiting/blocked/done report. Explicit retirement removes the entry
+from the active list; re-enrollment never transfers an old report.
 
 ## Message lifecycle
 

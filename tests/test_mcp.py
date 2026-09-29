@@ -86,9 +86,26 @@ async def test_bound_stdio_server_uses_its_own_identity():
                 "message_ack",
                 "messages_read",
                 "message_status",
+                "sessions_list",
+                "session_update",
             }
             result = await client.call_tool("agents_list", {})
             assert result.structured_content["agents"][0]["name"] == "a"
             result = await client.call_tool("agents_list", {"session_handle": "someone-else"})
             assert result.is_error
+            result = await client.call_tool(
+                "session_update",
+                {
+                    "task": "Bound report",
+                    "status": "working",
+                    "session_handle": "someone-else",
+                },
+            )
+            assert result.is_error
+            result = await client.call_tool(
+                "session_update", {"task": "Bound report", "status": "working"}
+            )
+            assert result.structured_content["name"] == "a"
+            listing = await client.call_tool("sessions_list", {})
+            assert listing.structured_content["sessions"][0]["report"]["task"] == "Bound report"
         store.close()

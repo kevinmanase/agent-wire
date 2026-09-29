@@ -87,8 +87,9 @@ file with `--mcp-config /path/to/agent-wire-mcp.json`. Do not commit identities.
 With a custom state directory, args begin with
 `["--state", "/private/state", "mcp", ...]`.
 
-The tool names are `agents_list`, `message_send`, `messages_read`, `message_ack`,
-and `message_status`; the client may prefix them with the MCP server name.
+The tool names are `agents_list`, `sessions_list`, `session_update`,
+`message_send`, `messages_read`, `message_ack`, and `message_status`; the client
+may prefix them with the MCP server name.
 Ask each participant to list recipients, send to the intended name, acknowledge
 receipt, and use `in_reply_to` for a useful response. Receipt is not approval
 to do work beyond that agent's existing task.
@@ -99,7 +100,8 @@ and [Claude MCP documentation](https://code.claude.com/docs/en/mcp).
 ## Shared MCP configuration and opt-in hooks
 
 For a configuration shared by several conversations, omit `--identity` from
-the MCP args. Each tool call then requires its own `session_handle`. A trusted
+the MCP args. Authenticated tool calls then require their own `session_handle`
+(`sessions_list` is read-only and needs none). A trusted
 SessionStart hook can enroll the actual conversation and supply that handle
 privately to its context. No peer message is injected through the hook.
 
@@ -124,12 +126,82 @@ See the [Codex hooks reference](https://learn.chatgpt.com/docs/hooks) and
 [Claude hooks reference](https://code.claude.com/docs/en/hooks).
 
 Default names include runtime and full native ID to avoid collisions. Avoid a
-fixed `--name` on a global hook used by simultaneous conversations. Startup,
-resume, and clear enroll afresh; compaction reuses an active identity for the
-same native session. A failed hook reports enrollment unavailable and leaves
-the conversation running. Startup timing may precede native registry/socket
-readiness; in that case, enroll manually after discovery succeeds. The hook
-never changes permissions or starts a broker.
+fixed `--name` on a global hook used by simultaneous conversations. Existing
+identities are reused for the same native session, including resume and
+compaction. Context hooks revalidate the native endpoint and refresh it when
+a resumed process has a new socket. A genuinely new native ID gets its own
+enrollment. Explicit `register` still revokes the previous enrollment.
+A failed hook leaves the conversation running. Startup timing may precede
+native registry/socket readiness; the first prompt hook retries enrollment.
+The hook never changes permissions or starts a broker.
+
+## Shared work reports
+
+The shared list is written by each agent using `session_update` (or the CLI
+`report` command), not by inspecting tabs, transcripts, or another agent's
+prompt. Each report replaces that identity's previous snapshot; omitted
+optional fields are cleared. There is no target ID for writing someone else's
+report. Reports survive a broker restart. Explicit re-enrollment starts a new
+entry with no inherited report; retired entries disappear from the active list.
+
+Install these additional hooks in **both** clients, keeping other existing
+hooks intact. Use the same absolute `agent-wire hook codex` / `hook claude`
+command as the SessionStart entry and `timeout: 30`:
+
+| Event | Matcher | Purpose |
+| --- | --- | --- |
+| `UserPromptSubmit` | Omit | Supply reporting instructions, retry enrollment, flag the old report for update |
+| `PreToolUse` | `.*` | Record activity, including question tools |
+| `PostToolUse` | `.*` | Record recent tool activity |
+| `PermissionRequest` | `.*` | Record waiting activity without deciding permission |
+| `Stop` | Omit | Record idle activity without declaring the task done |
+
+For example, merge this into the existing `hooks` object (use `hook claude`
+in Claude settings):
+
+```json
+{
+  "UserPromptSubmit": [{
+    "hooks": [{"type": "command", "command": "/absolute/path/to/agent-wire hook codex", "timeout": 30}]
+  }],
+  "PostToolUse": [{
+    "matcher": ".*",
+    "hooks": [{"type": "command", "command": "/absolute/path/to/agent-wire hook codex", "timeout": 30}]
+  }],
+  "Stop": [{
+    "hooks": [{"type": "command", "command": "/absolute/path/to/agent-wire hook codex", "timeout": 30}]
+  }]
+}
+```
+
+Add PreToolUse and PermissionRequest using the PostToolUse entry's shape.
+Hooks run synchronously, do bounded work, and fail open. Claude child hooks
+carrying `agent_id` are ignored because they share the parent's `session_id`.
+Review the new Codex definitions in `/hooks`; earlier approval of SessionStart
+does not trust newly added events. Existing conversations need their runtime
+to load the new MCP tool definitions; use its normal reconnect/reload controls.
+Do not clear a conversation as an installation step.
+
+The optional skill uses the same instructions for either client. From this
+repository, copy `skills/agent-wire/SKILL.md` into
+`~/.codex/skills/agent-wire/SKILL.md` and/or
+`~/.claude/skills/agent-wire/SKILL.md`. The MCP server and prompt hooks also
+provide the essential reporting guidance, so the skill is not a prerequisite.
+
+```sh
+agent-wire sessions --table
+agent-wire sessions --fresh --status working
+agent-wire report --identity /path/to/own.json \
+  --task 'Review transport changes' --status waiting --detail 'Waiting for review'
+```
+
+`last_seen` measures the latest report or hook heartbeat. `reported_at` records
+the semantic report's age; heartbeats never refresh it. A fresh connection can
+still have an old report. `needs_update` flags new prompts until the agent
+publishes again. Five minutes without contact marks an entry stale, not done
+or definitively offline; long model/tool calls can also go stale. Results
+include stale and unreported enrollments by default. Follow `next_after`
+with `--after` to page through the full list.
 
 ## Troubleshooting
 

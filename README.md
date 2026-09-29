@@ -2,9 +2,11 @@
 
 **Let Codex and Claude Code talk to each other.**
 
-Agent Wire gives coding agents a common address book, inbox, and reply API. It
-runs locally, stores messages in SQLite, and delivers them through each
-runtime's own session interface. Both agents use the same MCP tools.
+Agent Wire gives coding agents a common address book, inbox, reply API, and
+shared work list. Each agent reports its own task and status. It runs locally,
+stores messages and reports in SQLite, and delivers messages through each
+runtime's own session interface. Both agents use the same MCP tools. It has no
+dependency on a terminal manager or tab labels.
 
 ```mermaid
 flowchart LR
@@ -72,6 +74,8 @@ agent-wire mcp --identity /absolute/path/to/this-session-identity.json
 | Tool | Purpose |
 | --- | --- |
 | `agents_list` | Find explicitly enrolled recipients |
+| `sessions_list` | Read the shared task/status list, including freshness |
+| `session_update` | Replace your own task/status report |
 | `message_send` | Send text; set `in_reply_to` for a reply |
 | `messages_read` | Read pending messages, optionally after a cursor |
 | `message_ack` | Acknowledge a received message |
@@ -81,10 +85,39 @@ A bound MCP server belongs to **one** native conversation. Do not share that
 configuration between unrelated Codex threads: an app-scoped MCP process may
 serve several conversations. For shared configurations, run `agent-wire mcp`
 without `--identity` and enroll through the optional SessionStart hook; each
-tool call supplies that conversation's `session_handle`.
+authenticated tool call supplies that conversation's `session_handle`.
+The read-only `sessions_list` directory needs no credential within the local
+OS user's private broker socket.
 
 See [setup examples](docs/setup.md) for both clients, hook registration,
 permission behavior, and a model-free two-mailbox walkthrough.
+
+## Shared work list
+
+Each agent publishes its task at the start of work, on meaningful changes,
+before waiting for input, and before finishing. Both read the same list:
+
+```sh
+agent-wire sessions --table
+agent-wire sessions --runtime claude --status working
+agent-wire report --identity /path/to/own-identity.json \
+  --task 'Implement shared session registry' --status working \
+  --repository /path/to/repo --branch feature/session-reports
+```
+
+Reports include a task, `working`/`waiting`/`blocked`/`idle`/`done` status,
+optional detail/repository/branch/ticket, and timestamps. Hooks report activity
+and remind the agent to publish; they never infer task summaries or completion.
+After a new prompt, the previous report is marked as needing an update.
+After five minutes without a report or hook heartbeat, the entry is **stale**.
+Stale does not mean offline or finished, and idle does not mean done.
+
+Only enrolled sessions appear. Unreported entries stay explicitly unreported;
+this is not an inventory of every process on the machine. Results are paginated
+(`--after`/`next_after`), stale entries are included by default, and `--fresh`
+filters to recent contact. The CLI prints JSON unless `--table` is requested.
+See [reporting and hook setup](docs/setup.md#shared-work-reports) and the
+optional [reporting skill](skills/agent-wire/SKILL.md) for both agents.
 
 ## Delivery behavior
 
@@ -115,8 +148,8 @@ python3 -m venv .venv
 
 Tests use isolated state and fake runtime sockets; no accounts, API keys, or
 model calls are required. Live runtime checks are separate, explicit exercises.
-See [initial verification](docs/verification.md) for the tested native paths
-and a successful live Codex → Claude → Codex exchange.
+See [verification](docs/verification.md) for the tested native paths, a live
+Codex → Claude → Codex exchange, and both agents publishing shared work reports.
 Contributions to adapters, cross-platform support, and delivery semantics are
 welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 

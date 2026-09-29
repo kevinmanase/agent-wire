@@ -43,11 +43,17 @@ def write_identity(state: Path, identity: dict) -> Path:
     return path
 
 
-def read_identity(path: Path) -> str:
+def read_identity_record(path: Path) -> dict:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(fd) as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise WireError("unsafe_identity", "Identity file must be private and owned by you")
         data = json.load(stream)
-    return data["session_handle"]
+    if not isinstance(data, dict) or not isinstance(data.get("session_handle"), str):
+        raise WireError("unsafe_identity", "Invalid identity file")
+    return data
+
+
+def read_identity(path: Path) -> str:
+    return read_identity_record(path)["session_handle"]

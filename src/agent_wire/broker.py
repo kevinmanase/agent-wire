@@ -37,13 +37,27 @@ class Broker:
             self.wake.set()
             return result
         token = params.get("session_handle")
-        self.store.authenticate(token)
         rest = {k: v for k, v in params.items() if k != "session_handle"}
+        if method == "sessions_list":
+            # Read-only local directory: the private Unix socket enforces the OS-user boundary.
+            if token is not None:
+                self.store.authenticate(token)
+            return self.store.sessions(**rest)
+        agent = self.store.authenticate(token)
+        if method == "session_refresh":
+            if set(rest) != {"endpoint", "cwd"}:
+                raise WireError("invalid_input", "session_refresh needs endpoint and cwd")
+            endpoint = await self.adapters.validate(
+                agent["runtime"], agent["native_id"], rest["endpoint"]
+            )
+            return self.store.refresh_endpoint(token, endpoint, rest["cwd"])
         if method == "agents_list":
             if rest:
                 raise WireError("invalid_input", "agents_list accepts only a session credential")
             return {"agents": self.store.agents()}
         methods = {
+            "session_update": self.store.session_update,
+            "session_heartbeat": self.store.session_heartbeat,
             "message_send": self.store.send,
             "messages_read": self.store.inbox,
             "message_ack": self.store.ack,

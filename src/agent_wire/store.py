@@ -14,6 +14,8 @@ MAX_BODY = 65_536
 MAX_PENDING = 64
 MAX_HOPS = 8
 PENDING = ("queued", "delivering", "submitted", "unknown")
+WORK_STATES = ("working", "waiting", "blocked", "idle", "done")
+STALE_AFTER = 300
 
 
 def digest(value: str) -> str:
@@ -52,6 +54,15 @@ class Store:
                 fingerprint TEXT NOT NULL, UNIQUE(sender,idempotency_key)
             );
             CREATE INDEX IF NOT EXISTS inbox ON messages(recipient,seq);
+            CREATE TABLE IF NOT EXISTS session_reports (
+                agent_id TEXT PRIMARY KEY REFERENCES agents(id),
+                task TEXT NOT NULL DEFAULT '', status TEXT,
+                detail TEXT NOT NULL DEFAULT '', repository TEXT NOT NULL DEFAULT '',
+                branch TEXT NOT NULL DEFAULT '', ticket TEXT NOT NULL DEFAULT '',
+                reported_at REAL, last_seen REAL NOT NULL,
+                activity TEXT NOT NULL DEFAULT 'unknown',
+                needs_update INTEGER NOT NULL DEFAULT 1
+            );
         """)
         self.db.execute(
             "UPDATE messages SET status='unknown', detail='Broker restarted during delivery' "
@@ -129,6 +140,162 @@ class Store:
             self.public_agent(r)
             for r in self.db.execute("SELECT * FROM agents WHERE active=1 ORDER BY name")
         ]
+
+    def session_update(
+        self,
+        token: str,
+        *,
+        task: str,
+        status: str,
+        detail: str = "",
+        repository: str = "",
+        branch: str = "",
+        ticket: str = "",
+    ) -> dict:
+        """Replace the caller's report. Hooks never infer or overwrite these fields."""
+        agent = self.authenticate(token)
+        bounded_text(task, "task", 512)
+        if status not in WORK_STATES:
+            raise WireError("invalid_input", f"status must be one of {WORK_STATES}")
+        for name, value, limit in (
+            ("detail", detail, 2048),
+            ("repository", repository, 4096),
+            ("branch", branch, 256),
+            ("ticket", ticket, 256),
+        ):
+            if not isinstance(value, str) or len(value.encode()) > limit:
+                raise WireError(
+                    "invalid_input", f"{name} must be text, at most {limit} UTF-8 bytes"
+                )
+        now = self.clock()
+        self.db.execute(
+            "INSERT INTO session_reports "
+            "(agent_id,task,status,detail,repository,branch,ticket,"
+            "reported_at,last_seen,needs_update) "
+            "VALUES (?,?,?,?,?,?,?,?,?,0) ON CONFLICT(agent_id) DO UPDATE SET "
+            "task=excluded.task,status=excluded.status,detail=excluded.detail,"
+            "repository=excluded.repository,branch=excluded.branch,ticket=excluded.ticket,"
+            "reported_at=excluded.reported_at,last_seen=excluded.last_seen,needs_update=0",
+            (agent["id"], task, status, detail, repository, branch, ticket, now, now),
+        )
+        return self.session(agent["id"])
+
+    def refresh_endpoint(self, token: str, endpoint: dict, cwd: str) -> dict:
+        # Only called after native validation by the broker; recheck after that async work.
+        agent = self.authenticate(token)
+        if not isinstance(cwd, str) or len(cwd.encode()) > 4096:
+            raise WireError("invalid_input", "cwd must be text, at most 4096 UTF-8 bytes")
+        self.db.execute(
+            "UPDATE agents SET endpoint=?,cwd=? WHERE id=?",
+            (json.dumps(endpoint), cwd, agent["id"]),
+        )
+        return self.public_agent(self.agent(agent["id"]))
+
+    def session_heartbeat(self, token: str, *, activity: str, new_turn: bool = False) -> dict:
+        agent = self.authenticate(token)
+        if activity not in ("working", "waiting", "idle") or type(new_turn) is not bool:
+            raise WireError(
+                "invalid_input", "Expected activity working/waiting/idle and boolean new_turn"
+            )
+        self.db.execute(
+            "INSERT INTO session_reports (agent_id,last_seen,activity,needs_update) "
+            "VALUES (?,?,?,1) "
+            "ON CONFLICT(agent_id) DO UPDATE SET last_seen=excluded.last_seen,"
+            "activity=excluded.activity,needs_update=CASE WHEN ? THEN 1 ELSE needs_update END",
+            (agent["id"], self.clock(), activity, new_turn),
+        )
+        return self.session(agent["id"])
+
+    @staticmethod
+    def session_view(row, now: float) -> dict:
+        result = Store.public_agent(row)
+        seen = row["last_seen"]
+        result.update(
+            last_seen=seen,
+            age_seconds=max(0, now - seen) if seen is not None else None,
+            freshness="unseen"
+            if seen is None
+            else "stale"
+            if now - seen >= STALE_AFTER
+            else "fresh",
+            activity=row["activity"] or "unknown",
+            report=None,
+        )
+        if row["reported_at"] is not None:
+            result["report"] = {
+                key: row[key]
+                for key in (
+                    "task",
+                    "status",
+                    "detail",
+                    "repository",
+                    "branch",
+                    "ticket",
+                    "reported_at",
+                )
+            }
+            result["report"]["needs_update"] = bool(row["needs_update"])
+        return result
+
+    def session(self, agent_id: str) -> dict:
+        row = self.db.execute(
+            "SELECT a.*,r.* FROM agents a LEFT JOIN session_reports r ON r.agent_id=a.id "
+            "WHERE a.id=?",
+            (agent_id,),
+        ).fetchone()
+        if row is None:
+            raise WireError("not_found", "Unknown session")
+        return self.session_view(row, self.clock())
+
+    def sessions(
+        self,
+        *,
+        runtime: str | None = None,
+        status: str | None = None,
+        include_stale: bool = True,
+        after: str = "",
+        limit: int = 50,
+    ) -> dict:
+        if runtime is not None and runtime not in ("codex", "claude", "mailbox"):
+            raise WireError("invalid_input", "Invalid runtime filter")
+        if status is not None and status not in (*WORK_STATES, "unreported"):
+            raise WireError("invalid_input", "Invalid status filter")
+        if type(limit) is not int or not 1 <= limit <= 100 or type(include_stale) is not bool:
+            raise WireError("invalid_input", "limit must be 1–100; include_stale must be boolean")
+        if not isinstance(after, str) or len(after) > 64:
+            raise WireError("invalid_input", "Invalid session cursor")
+        now = self.clock()
+        clauses, params = ["a.active=1", "a.id> ?"], [after]
+        if runtime is not None:
+            clauses.append("a.runtime=?")
+            params.append(runtime)
+        if status is not None:
+            clauses.append("COALESCE(r.status,'unreported')=?")
+            params.append(status)
+        if not include_stale:
+            clauses.append("r.last_seen>?")
+            params.append(now - STALE_AFTER)
+        rows = self.db.execute(
+            "SELECT a.*,r.* FROM agents a LEFT JOIN session_reports r ON r.agent_id=a.id WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY a.id LIMIT ?",
+            [*params, limit + 1],
+        )
+        sessions, size, more = [], 0, False
+        for row in rows:
+            item = self.session_view(row, now)
+            encoded = len(json.dumps(item).encode())
+            if len(sessions) == limit or size + encoded > 512 * 1024:
+                more = True
+                break
+            sessions.append(item)
+            size += encoded
+        return {
+            "sessions": sessions,
+            "next_after": sessions[-1]["id"] if more else None,
+            "generated_at": now,
+            "stale_after_seconds": STALE_AFTER,
+        }
 
     def resolve(self, target: str):
         rows = self.db.execute(
