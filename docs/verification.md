@@ -52,10 +52,13 @@ was stopped afterward. Existing real Claude sessions also began publishing
 their own task reports through the installed reporting integration.
 
 The running Codex app-server loaded version 0.2.0 with both new tools, and the
-current Codex conversation successfully called `session_update`. New Codex
-hook definitions still require the user's native `/hooks` review; manual/MCP
-reporting does not require those hooks. This is a shared list of enrolled,
-self-reporting sessions, not proof of coverage of every running process.
+current Codex conversation successfully called `session_update`. All six
+installed Codex lifecycle hooks were subsequently confirmed enabled and trusted
+after the user's native `/hooks` review, and the running conversation emitted
+activity heartbeats. Reports survived the handover from a temporary broker to
+the enabled user service. New installations still need their own hook review.
+This is a shared list of enrolled, self-reporting sessions, not proof of
+coverage of every running process.
 
 To repeat a live test, use a fresh private state directory and explicit
 session enrollment. Configure the receiving runtime's normal permissions for
