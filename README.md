@@ -65,30 +65,11 @@ tests and review still establish whether the work is finished.
 ### Alongside herdr
 
 I pair Agent Wire with [herdr](https://github.com/herdrdev/herdr), a terminal
-workspace manager with a tmux-style workflow. This is my personal setup:
-
-<img src="docs/screenshots/herdr-orchestrator.png" alt="Herdr sidebar showing one crowned orchestrator alongside named Claude and Codex workers, with task and attention indicators" width="560" />
-
-*Screenshot supplied from my working setup. These tab labels come from my
-herdr hooks; Agent Wire's shared work reports are separate.*
-
-My labels follow **status + stage + short task**. The crown marks the shared
-orchestrator. Workers rename their tabs when the task or stage changes,
-such as investigating, building, testing, reviewing, or parked. A question
-or action needed from me stays visible in the label until it is resolved.
-
-In these hooks, `⏳` means working and `✅` means the turn ended with nothing
-needed from me. It does **not** mean the task is verified or merged. `❓`
-flags a decision and `❗` flags an action. The stage icon and task text supply
-the rest of the context.
-
-The tab strip helps me scan the workspace. Agent Wire gives the agents a
-shared list they can read and a way to exchange messages. It also works
-without herdr.
-
-The optional [herdr setup guide](docs/herdr.md) includes a portable label
-helper, a naming skill, and lifecycle hook examples for Claude Code and Codex.
-Copy only the parts you want; install them at user scope.
+workspace manager with a tmux-style workflow. My
+[herdr-customizations](https://github.com/kevinmanase/herdr-customizations)
+repo shows the tab naming setup with a screenshot, a naming skill, and hooks
+for Claude Code and Codex. The customization is optional; Agent Wire works
+independently of it.
 
 ## Quick start
 
