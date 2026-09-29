@@ -28,10 +28,11 @@ retired and fixture process stopped afterward. The installed broker remained
 running. No user conversation was cleared or restarted.
 
 This verifies both native endpoints, real model-generated replies, shared
-unbound MCP configuration, and automatic Claude enrollment. Codex's hook
-definition was discovered but left pending its normal user trust review;
-the live Codex session was enrolled explicitly. Native compatibility on
-macOS and compatibility with other runtime versions still need live checks.
+unbound MCP configuration, and automatic Claude enrollment. The live Codex
+session was enrolled explicitly. Its enrollment hook was also checked locally,
+reviewed by the user through `/hooks`, and confirmed enabled and trusted by
+the running daemon. Native compatibility on macOS and compatibility with
+other runtime versions still need live checks.
 
 To repeat a live test, use a fresh private state directory and explicit
 session enrollment. Configure the receiving runtime's normal permissions for
