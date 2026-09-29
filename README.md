@@ -86,6 +86,10 @@ The tab strip helps me scan the workspace. Agent Wire gives the agents a
 shared list they can read and a way to exchange messages. It also works
 without herdr.
 
+The optional [herdr setup guide](docs/herdr.md) includes a portable label
+helper, a naming skill, and lifecycle hook examples for Claude Code and Codex.
+Copy only the parts you want; install them at user scope.
+
 ## Quick start
 
 Install from this repository (there is no PyPI release yet):
