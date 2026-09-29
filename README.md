@@ -21,6 +21,71 @@ target **Codex app-server 0.159.x** and **Claude Code 2.1.280**. Other versions
 fail explicitly. Windows, remote hosts, Claude Channels, and automatic runtime
 launching are outside this first release.
 
+## One orchestrator, several agents
+
+I mainly talk to one orchestrator. It keeps track of the work, coordinates
+the other agents, and brings questions back to me. A worker can stay in
+Claude Code while another uses Codex, with each keeping its native tools,
+context, and permission controls.
+
+Agent Wire supplies the shared work list and messages. The orchestrator is a
+role you give an agent, not a scheduler built into Agent Wire. It can read
+reports, ask an enrolled worker for an update, and follow up on a reply.
+
+### Outside a coding agent
+
+Read the same work list from an ordinary shell, without making a model call:
+
+```sh
+agent-wire sessions --table
+```
+
+The table shows each enrolled session's runtime, reported status, recent
+contact, freshness, and task. Use it to see who is working, waiting, or
+blocked. Freshness measures recent contact. The `*` marker means a new
+prompt arrived since the report. Use the JSON output's `reported_at` field
+to check the report's age; fresh heartbeats can coexist with old reports.
+
+### Inside a coding agent
+
+With the MCP server configured, ask your orchestrator:
+
+> Read the shared work list. Summarize who is working, waiting, or blocked,
+> and flag stale sessions or reports needing an update. Ask the reviewer
+> for an update on its current task.
+
+The agent can use `sessions_list` to read reports, `agents_list` to resolve
+the intended recipient, and `message_send` to send the update request. The
+reviewer uses `message_ack` and replies with `in_reply_to`. Each participant
+publishes its own progress through `session_update`.
+
+Both interfaces read the same local broker. A reply is useful coordination;
+tests and review still establish whether the work is finished.
+
+### Alongside herdr
+
+I pair Agent Wire with [herdr](https://github.com/herdrdev/herdr), a terminal
+workspace manager with a tmux-style workflow. This is my personal setup:
+
+<img src="docs/screenshots/herdr-orchestrator.png" alt="Herdr sidebar showing one crowned orchestrator alongside named Claude and Codex workers, with task and attention indicators" width="560" />
+
+*Screenshot supplied from my working setup. These tab labels come from my
+herdr hooks; Agent Wire's shared work reports are separate.*
+
+My labels follow **status + stage + short task**. The crown marks the shared
+orchestrator. Workers rename their tabs when the task or stage changes,
+such as investigating, building, testing, reviewing, or parked. A question
+or action needed from me stays visible in the label until it is resolved.
+
+In these hooks, `⏳` means working and `✅` means the turn ended with nothing
+needed from me. It does **not** mean the task is verified or merged. `❓`
+flags a decision and `❗` flags an action. The stage icon and task text supply
+the rest of the context.
+
+The tab strip helps me scan the workspace. Agent Wire gives the agents a
+shared list they can read and a way to exchange messages. It also works
+without herdr.
+
 ## Quick start
 
 Install from this repository (there is no PyPI release yet):
