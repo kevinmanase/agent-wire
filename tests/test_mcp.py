@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+import asyncio
+import tempfile
+from pathlib import Path
+
+from mcp import Client, StdioServerParameters
+
+from agent_wire.broker import Broker
+from agent_wire.mcp_server import make_server
+from agent_wire.paths import write_identity
+from agent_wire.store import Store
+
+from .test_store import enroll
+
+
+async def test_same_mcp_tools_can_send_receive_ack_and_reply():
+    with tempfile.TemporaryDirectory() as directory:
+        state = Path(directory)
+        store = Store(state / "db")
+        a, b = enroll(store), enroll(store, "b")
+        broker = Broker(store)
+        server = await asyncio.start_unix_server(broker.handle, path=state / "broker.sock")
+        async with server, Client(make_server(state), raise_exceptions=True) as client:
+            result = await client.call_tool(
+                "message_send",
+                {
+                    "session_handle": a["session_handle"],
+                    "to": "b",
+                    "body": "hello",
+                    "idempotency_key": "mcp-send",
+                },
+            )
+            message_id = result.structured_content["id"]
+            incoming = await client.call_tool(
+                "messages_read", {"session_handle": b["session_handle"]}
+            )
+            assert incoming.structured_content["messages"][0]["id"] == message_id
+            ack = await client.call_tool(
+                "message_ack",
+                {
+                    "session_handle": b["session_handle"],
+                    "message_id": message_id,
+                },
+            )
+            assert ack.structured_content["status"] == "acknowledged"
+            reply = await client.call_tool(
+                "message_send",
+                {
+                    "session_handle": b["session_handle"],
+                    "to": "a",
+                    "body": "reply",
+                    "in_reply_to": message_id,
+                },
+            )
+            assert reply.structured_content["in_reply_to"] == message_id
+        store.close()
+
+
+async def test_bound_stdio_server_uses_its_own_identity():
+    import sys
+
+    with tempfile.TemporaryDirectory() as directory:
+        state = Path(directory)
+        store = Store(state / "db")
+        a = enroll(store)
+        identity = write_identity(state, a)
+        broker = Broker(store)
+        server = await asyncio.start_unix_server(broker.handle, path=state / "broker.sock")
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=[
+                "-m",
+                "agent_wire",
+                "--state",
+                str(state),
+                "mcp",
+                "--identity",
+                str(identity),
+            ],
+        )
+        async with server, Client(params) as client:
+            tools = await client.list_tools()
+            assert {tool.name for tool in tools.tools} == {
+                "agents_list",
+                "message_send",
+                "message_ack",
+                "messages_read",
+                "message_status",
+            }
+            result = await client.call_tool("agents_list", {})
+            assert result.structured_content["agents"][0]["name"] == "a"
+            result = await client.call_tool("agents_list", {"session_handle": "someone-else"})
+            assert result.is_error
+        store.close()

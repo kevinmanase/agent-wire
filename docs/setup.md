@@ -1,0 +1,149 @@
+# Setup
+
+Install Agent Wire as shown in the README. Run `agent-wire serve` in a terminal
+or a service you manage. Use the same `--state` directory in all commands and
+MCP configurations; the default is `$XDG_STATE_HOME/agent-wire`, falling back
+to `~/.local/state/agent-wire`. Existing state directories must have mode 0700.
+
+## Try it without models
+
+Create two mailbox identities. Substitute your own UUIDs if you prefer:
+
+```sh
+agent-wire register --runtime mailbox --name alice --session mailbox-alice
+agent-wire register --runtime mailbox --name bob --session mailbox-bob
+```
+
+Save the two returned `identity_file` paths, then run:
+
+```sh
+agent-wire send --identity /path/to/alice.json --to bob \
+  --body 'Hello from Alice' --key first-message
+agent-wire inbox --identity /path/to/bob.json
+agent-wire ack --identity /path/to/bob.json MESSAGE_ID
+agent-wire send --identity /path/to/bob.json --to alice \
+  --body 'Hello back' --reply-to MESSAGE_ID --key first-reply
+agent-wire inbox --identity /path/to/alice.json
+agent-wire ack --identity /path/to/alice.json REPLY_ID
+agent-wire status --identity /path/to/alice.json MESSAGE_ID
+```
+
+The first message should be `replied`, with a `reply_id`. A mailbox endpoint
+has no automatic native delivery: consumers explicitly read and acknowledge.
+
+## Native runtime prerequisites
+
+Start the conversations you want to connect. `agent-wire discover` prints
+session IDs, current names, sockets, and adapter support. It does not enroll
+every session on the machine. Select the intended conversations explicitly.
+Native versions currently supported are Codex app-server 0.159.x and Claude
+Code 2.1.280. Retest an adapter before changing its allowlist.
+
+Codex must expose its local app-server control WebSocket socket and keep the
+target thread loaded. Discovery looks under
+`$CODEX_HOME/app-server-control/app-server-control.sock` (default `~/.codex`).
+For another location, use `discover --codex-socket /absolute/socket/path`.
+A standalone CLI without that daemon/socket can use mailbox mode and MCP
+polling, but cannot receive automatic tool-output delivery through this adapter.
+
+Claude must publish a live peer inbox in its session registry. Its existing
+cross-session inbound policy decides whether it accepts the peer frame.
+Agent Wire does not change that policy. If the recipient rejects inbound
+messages, use its normal approval/settings interface or read its Agent Wire
+inbox explicitly. Do not bypass it with terminal pasting.
+
+Enroll native sessions using the README's `register` commands. A new
+enrollment revokes the old credential for that native session. After a clear,
+verify the replacement session ID and enroll it separately. Old messages are
+never redirected to the replacement conversation.
+
+## Bind an MCP server to one conversation
+
+Codex `config.toml` example for a configuration used by just one conversation:
+
+```toml
+[mcp_servers.agent_wire]
+command = "/absolute/path/to/agent-wire"
+args = ["mcp", "--identity", "/private/path/to/codex-identity.json"]
+```
+
+Claude MCP JSON for a configuration used by just one conversation:
+
+```json
+{
+  "mcpServers": {
+    "agent_wire": {
+      "type": "stdio",
+      "command": "/absolute/path/to/agent-wire",
+      "args": ["mcp", "--identity", "/private/path/to/claude-identity.json"]
+    }
+  }
+}
+```
+
+Merge entries into existing settings; do not overwrite other servers. Use
+each client's normal MCP trust/approval UI. Claude can also load a dedicated
+file with `--mcp-config /path/to/agent-wire-mcp.json`. Do not commit identities.
+With a custom state directory, args begin with
+`["--state", "/private/state", "mcp", ...]`.
+
+The tool names are `agents_list`, `message_send`, `messages_read`, `message_ack`,
+and `message_status`; the client may prefix them with the MCP server name.
+Ask each participant to list recipients, send to the intended name, acknowledge
+receipt, and use `in_reply_to` for a useful response. Receipt is not approval
+to do work beyond that agent's existing task.
+
+These configurations follow the official [Codex MCP documentation](https://developers.openai.com/codex/mcp/)
+and [Claude MCP documentation](https://code.claude.com/docs/en/mcp).
+
+## Shared MCP configuration and opt-in hooks
+
+For a configuration shared by several conversations, omit `--identity` from
+the MCP args. Each tool call then requires its own `session_handle`. A trusted
+SessionStart hook can enroll the actual conversation and supply that handle
+privately to its context. No peer message is injected through the hook.
+
+Add this entry under `hooks.SessionStart` in your Codex `hooks.json`:
+
+```json
+{
+  "matcher": "startup|resume|clear|compact",
+  "hooks": [{
+    "type": "command",
+    "command": "/absolute/path/to/agent-wire hook codex",
+    "timeout": 30
+  }]
+}
+```
+
+For Claude, use the same entry under `hooks.SessionStart` in its settings, with
+`agent-wire hook claude` as the command. Both wrappers read `session_id` from
+the hook's JSON input; inherited terminal or pane variables are not identity.
+Review new hook definitions through the client's normal trust interface.
+See the [Codex hooks reference](https://learn.chatgpt.com/docs/hooks) and
+[Claude hooks reference](https://code.claude.com/docs/en/hooks).
+
+Default names include runtime and full native ID to avoid collisions. Avoid a
+fixed `--name` on a global hook used by simultaneous conversations. Startup,
+resume, and clear enroll afresh; compaction reuses an active identity for the
+same native session. A failed hook reports enrollment unavailable and leaves
+the conversation running. Startup timing may precede native registry/socket
+readiness; in that case, enroll manually after discovery succeeds. The hook
+never changes permissions or starts a broker.
+
+## Troubleshooting
+
+| Observation | Check |
+| --- | --- |
+| `broker_unavailable` | Start the broker with the same state path |
+| `unsupported_version` | Confirm the native app-server/CLI version and adapter allowlist |
+| `recipient_unavailable` | List enrolled agents; verify the current enrollment UUID |
+| `unauthorized` | Use the current session's identity; old registrations are revoked |
+| `submitted` without a receipt | Check receiving runtime policy, then explicitly read the inbox |
+| `unknown` | Reconcile with inbox/status; do not blindly send a new duplicate |
+| `path_too_long` | Choose a shorter private state path for the Unix socket |
+
+Stop the broker with Ctrl-C or SIGTERM. Restarting preserves identities and
+messages. `agent-wire retire --identity /path/to/identity.json` removes one
+enrollment from the active address book; it does not clear or stop its native
+conversation. Agent Wire has no conversation-clearing command.

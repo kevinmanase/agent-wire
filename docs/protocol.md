@@ -1,0 +1,119 @@
+# Protocol and native adapters
+
+The public API is the five MCP tools described in the README. The broker's
+local protocol is version 1: one newline-terminated JSON request and response
+per Unix socket connection. A request is `{"method": "...", "params": {...}}`;
+a response is `{"result": ...}` or `{"error": {"code": "...", "message": "..."}}`.
+Frames are limited to 1 MiB. This is not a public network endpoint.
+
+## Identities and addresses
+
+An enrollment has a generated UUID, unique active display name, runtime,
+native session ID, socket endpoint, and random private credential. Native
+session IDs are not credentials. Enrolling a native runtime/session pair again
+retires its earlier identity. Names may be reused after retirement, but queued
+messages always retain their original destination UUID.
+
+Discovery is read-only. Enrollment is a local-user administrative operation;
+it validates that a native target is currently loaded. MCP tools cannot enroll
+arbitrary targets. A bound MCP process reads one private identity file. An
+unbound process requires the calling conversation's own `session_handle` on
+each operation. Never bind a shared app-scoped process to one conversation.
+
+## Message lifecycle
+
+Each message has a UUID, global monotonic `seq`, sender and recipient enrollment
+records, body, creation/expiry timestamps in Unix seconds, optional
+`in_reply_to`, reply-hop count, status, detail, acknowledgement time, and
+optional `reply_id`.
+
+| Status | Meaning |
+| --- | --- |
+| `queued` | Durable; awaiting native submission or mailbox read |
+| `delivering` | Native submission is in progress |
+| `submitted` | App-server accepted the request, or the Claude socket write completed |
+| `acknowledged` | Recipient explicitly recorded receipt |
+| `replied` | Recipient submitted a correlated reply; `reply_id` identifies the latest reply |
+| `unknown` | Submission may have happened; no automatic replay |
+| `expired` | The acknowledgement deadline passed |
+| `failed` | A definitive rejection or retired queued destination prevented delivery |
+
+Acknowledgement is not task completion. Sending a reply acknowledges its parent
+but does not prove the reply was delivered. Receipts may arrive before the
+native write completes; conditional state updates preserve those receipts.
+Expired messages are excluded from the inbox; a later explicit reply can
+still correlate to an expired parent and records `replied`.
+
+A pre-write offline failure can retry. A possibly completed write cannot.
+After a broker crash, `delivering` becomes `unknown`. Use `messages_read` to
+recover unknown deliveries and explicitly acknowledge them. A message can
+remain `submitted` until expiry when the native runtime silently declines it.
+There is no exactly-once processing guarantee. Do not infer human consent
+from any transport status.
+
+The sender supplies an idempotency key (the CLI/MCP generates one when omitted).
+Reusing it with exactly the same recipient selector, body, reply link, and TTL
+returns the original message. Changing those fields is an error. Specify
+`--key` / `idempotency_key` before sending if you need safe retries after losing
+the response. Reusing a key does not retry an `unknown` native submission.
+
+Reading pending messages does not acknowledge them. A cursor is the final
+returned sequence number; pages stop at the count or encoded-size budget.
+Continue until a page is empty. Start at zero when recovering unacknowledged
+messages, including earlier messages already returned by a previous read.
+
+Defaults: 64 KiB UTF-8 body, 64 pending messages per recipient, 30 sends per
+sender per minute, TTL 3,600 seconds (range 1–86,400), and 8 reply hops. Up to
+four destinations can deliver concurrently; each sweep selects its oldest
+queued message. Polling offline destinations occurs every two seconds.
+Runtime processing order is outside the broker's guarantees.
+
+## Codex
+
+The adapter was verified against **app-server 0.159.0**, with an allowlist for
+the 0.159 series. This is the app-server version, which may differ from the
+installed CLI. It uses the local control socket via WebSocket, initializes the
+connection, checks `thread/loaded/list`, and reads the identified thread. It
+does not resume an unloaded thread.
+
+Delivery calls `turn/start` with an empty `input` and
+`toolOutput: {name: "message_receive", namespace: "agent_wire", output: "..."}`.
+The output contains the message envelope plus a peer-data notice. The daemon
+can queue it during an existing turn. It is not inserted as developer
+instructions, a human message, or hook-supplied peer content.
+
+Codex's native child-agent collaboration primitives address its own agent
+tree. Host-specific thread messaging tools are another interface; neither is
+the portable API that Claude consumes here. The bridge exposes a common MCP
+surface and uses the app-server for inbound delivery.
+
+Primary references: [Codex app-server](https://developers.openai.com/codex/app-server/)
+and the JSON schema generated by the installed `codex app-server generate-json-schema`.
+Socket discovery and `toolOutput` delivery are version-sensitive extensions;
+verify them before widening the allowlist.
+
+## Claude Code
+
+The adapter targets **Claude Code 2.1.280**, peer protocol 1. It reads live,
+same-user session registry records under `~/.claude/sessions` (or
+`CLAUDE_CONFIG_DIR`), verifies the PID and owned Unix socket, and matches the
+native session ID again before every delivery.
+
+The observed inbox accepts newline-delimited JSON with `type: "user"`, the
+target `session_id`, an explicit `from: "agent-wire:<sender UUID>"`, `msg_id`,
+`priority: "next"`, and `message: {role: "user", content: "<peer envelope>"}`.
+The `from` field identifies the peer transport. The receiver's session fence
+and inbound controls remain in force. No child-agent token or privileged
+origin mode is used. Replies must use Agent Wire's MCP tool, because Codex is
+not a native Claude inbox reply address.
+
+This adapter uses an **observed internal protocol**, not a promised stable
+Anthropic integration API. It is independent implementation code; no vendor
+binary or extracted proprietary source is distributed here. A completed
+socket write is only `submitted`: there is no processing acknowledgement on
+that connection. Claude team mailboxes are a different mechanism and are not
+used. A future [Claude Channels](https://code.claude.com/docs/en/channels)
+adapter can offer a supported opt-in integration.
+
+Neither native adapter rewrites global runtime settings, launches a session,
+forges user approval, or falls back to pasting into a terminal.

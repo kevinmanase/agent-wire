@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-wire"
+version = "0.1.0"
+description = "A local message bus for Codex and Claude Code sessions"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{name = "Kevin Manase"}]
+dependencies = ["mcp>=2.2,<3", "websockets>=17.1,<18"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Operating System :: POSIX",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development",
+]
+
+[project.urls]
+Homepage = "https://github.com/kevinmanase/agent-wire"
+Issues = "https://github.com/kevinmanase/agent-wire/issues"
+
+[project.scripts]
+agent-wire = "agent_wire.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.15,<1", "build>=1,<2"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_wire"]

@@ -1,0 +1,14 @@
+name: Feature or adapter proposal
+description: Propose a capability or runtime integration
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What workflow should this support?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior and verification
+      description: For an adapter, include official protocol documentation and runtime versions if available

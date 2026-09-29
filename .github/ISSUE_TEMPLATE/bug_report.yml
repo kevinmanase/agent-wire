@@ -1,0 +1,24 @@
+name: Bug report
+description: Report a reproducible messaging or setup problem
+body:
+  - type: input
+    id: versions
+    attributes:
+      label: Versions and OS
+      description: Agent Wire, Python, Codex app-server, Claude Code, and operating system
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal steps with synthetic session names; remove credentials and private messages
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed behavior
+      description: Include delivery status and error code when available
+    validations:
+      required: true
