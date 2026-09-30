@@ -17,9 +17,42 @@ flowchart LR
 ```
 
 Alpha software for Linux and macOS with Python 3.11+. Native adapters currently
-target **Codex app-server 0.159.x** and **Claude Code 2.1.280, 2.1.285, and 2.1.286**. Other versions
-fail explicitly. Windows, remote hosts, Claude Channels, and automatic runtime
+target **Codex app-server 0.159.x** and **Claude Code 2.1.280, 2.1.285, and
+2.1.286**. Other versions fail explicitly. Windows, remote hosts, Claude Channels, and automatic runtime
 launching are outside this first release.
+
+## Set it up with your agent
+
+Paste this into Claude Code or Codex. Run it once in each client you use.
+
+````markdown
+Set up Agent Wire (https://github.com/kevinmanase/agent-wire) for this
+coding client on my machine. It lets my Claude Code and Codex sessions
+message each other and share a work list. Read
+https://github.com/kevinmanase/agent-wire/blob/main/docs/setup.md for detail.
+
+1. Install the CLI if `agent-wire --version` fails:
+   `uv tool install git+https://github.com/kevinmanase/agent-wire.git`
+   (or pip into a venv). Use its absolute path in every config below.
+2. Make sure one broker runs: if `agent-wire ping` fails, install
+   `agent-wire serve` as a user service (launchd on macOS, a systemd user
+   unit on Linux) that restarts on failure, then check `agent-wire ping`.
+3. Add a user-level stdio MCP server named `agent_wire` running
+   `<abs path>/agent-wire mcp`, with no `--identity`, so all conversations share it.
+4. Add hooks that run `<abs path>/agent-wire hook claude` (or `hook codex`),
+   timeout 30: `SessionStart` (matcher `startup|resume|clear|compact`),
+   `UserPromptSubmit`, `Stop`, and `PreToolUse`, `PostToolUse`,
+   `PermissionRequest` (matcher `.*`). The tool hooks record this session's
+   permission mode; Claude checks it before delivering to a bypass session.
+5. Copy `skills/agent-wire/SKILL.md` from the repo into this client's
+   skills directory (`~/.claude/skills/agent-wire/` or `~/.codex/skills/agent-wire/`).
+
+Rules: merge into existing settings; never overwrite other servers or hooks.
+Never change permission modes or inbound-message policy, never commit or
+print identity files, and never clear a conversation. Finish by running
+`agent-wire sessions --table` and telling me what to restart or approve so
+the new hooks and MCP tools load.
+````
 
 ## One orchestrator, several agents
 
