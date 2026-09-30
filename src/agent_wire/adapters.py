@@ -14,7 +14,7 @@ from . import __version__
 from .errors import DeliveryUnknown, Offline, WireError
 from .paths import check_socket
 
-CLAUDE_VERSIONS = {"2.1.280"}
+CLAUDE_VERSIONS = {"2.1.280", "2.1.285", "2.1.286"}
 CODEX_SERIES = {(0, 159)}
 TIMEOUT = 8
 PEER_NOTICE = (
@@ -152,13 +152,15 @@ class NativeAdapters:
             if len(records) != 1:
                 raise Offline("Claude session and socket no longer match the live registry")
             if records[0].get("version") not in CLAUDE_VERSIONS:
-                raise WireError("unsupported_version", "Claude inbox adapter supports 2.1.280")
+                raise WireError(
+                    "unsupported_version", "Claude inbox adapter supports 2.1.280, 2.1.285, 2.1.286"
+                )
         else:
             raise WireError("invalid_runtime", "Unknown runtime")
         check_socket(path)
         return {"path": path}
 
-    async def deliver(self, agent, envelope: dict):
+    async def deliver(self, agent, envelope: dict, sender_mode: str | None = None):
         endpoint = json.loads(agent["endpoint"])
         await self.validate(agent["runtime"], agent["native_id"], endpoint)
         payload = {"notice": PEER_NOTICE, "message": envelope}
@@ -182,13 +184,22 @@ class NativeAdapters:
                     delivery=True,
                 )
         else:
+            # Escaping "<" keeps a peer body from closing the wrapper; the JSON is unchanged.
+            content = json.dumps(payload).replace("<", "\\u003c")
+            if sender_mode is not None:
+                # Claude holds unattested peer messages in bypass sessions. This tag is its own
+                # SendMessage format; it states the sender's class, never the recipient's.
+                content = (
+                    f'<cross-session-message from-mode="{sender_mode}">\n'
+                    f"{content}\n</cross-session-message>"
+                )
             frame = {
                 "type": "user",
                 "session_id": agent["native_id"],
                 "from": f"agent-wire:{envelope['sender']['id']}",
                 "msg_id": envelope["id"],
                 "priority": "next",
-                "message": {"role": "user", "content": json.dumps(payload)},
+                "message": {"role": "user", "content": content},
             }
             try:
                 async with asyncio.timeout(TIMEOUT):

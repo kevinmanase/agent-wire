@@ -17,6 +17,14 @@ EVENTS = {
     "Stop",
 }
 QUESTIONS = re.compile(r"(?:request_user_input(?:_async)?|AskUserQuestion|ExitPlanMode)$")
+# Claude Code's peer permission classes. Plan mode can be either class, so it attests nothing.
+MODE_CLASSES = {
+    "bypassPermissions": "bypass",
+    "default": "prompting",
+    "acceptEdits": "prompting",
+    "dontAsk": "prompting",
+    "auto": "prompting",
+}
 
 
 def hook_context(token: str, name: str, event: str, identity_file: Path) -> dict:
@@ -80,7 +88,11 @@ async def run_hook(
         event == "PreToolUse" and QUESTIONS.search(str(payload.get("tool_name", "")))
     ):
         activity = "waiting"
-    heartbeat = {"activity": activity, "new_turn": event == "UserPromptSubmit"}
+    heartbeat = {
+        "activity": activity,
+        "new_turn": event == "UserPromptSubmit",
+        "mode": MODE_CLASSES.get(payload.get("permission_mode")),
+    }
     target = None
     if event in ("SessionStart", "UserPromptSubmit"):
         discovery = await NativeAdapters().discover(codex_socket)

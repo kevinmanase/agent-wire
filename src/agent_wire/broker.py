@@ -89,7 +89,9 @@ class Broker:
                 if not self.store.transition(row["id"], "delivering", expected="queued"):
                     return
                 try:
-                    await self.adapters.deliver(agent, self.store.envelope(row))
+                    await self.adapters.deliver(
+                        agent, self.store.envelope(row), self.store.agent(row["sender"])["mode"]
+                    )
                 except Offline as exc:
                     self.store.transition(row["id"], "queued", str(exc))
                 except DeliveryUnknown as exc:

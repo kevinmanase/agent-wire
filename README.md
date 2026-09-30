@@ -17,7 +17,7 @@ flowchart LR
 ```
 
 Alpha software for Linux and macOS with Python 3.11+. Native adapters currently
-target **Codex app-server 0.159.x** and **Claude Code 2.1.280**. Other versions
+target **Codex app-server 0.159.x** and **Claude Code 2.1.280, 2.1.285, and 2.1.286**. Other versions
 fail explicitly. Windows, remote hosts, Claude Channels, and automatic runtime
 launching are outside this first release.
 

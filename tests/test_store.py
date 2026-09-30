@@ -181,3 +181,23 @@ def test_restart_preserves_messages_without_replaying_uncertain_delivery(tmp_pat
         assert second.status(a["session_handle"], message["id"])["status"] == "acknowledged"
     finally:
         second.close()
+
+
+def test_existing_database_gains_mode_column(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.sqlite3"
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT NOT NULL, runtime TEXT NOT NULL, "
+        "native_id TEXT NOT NULL, endpoint TEXT NOT NULL, cwd TEXT NOT NULL, "
+        "credential TEXT NOT NULL UNIQUE, active INTEGER NOT NULL, created REAL NOT NULL)"
+    )
+    old.close()
+    store = Store(path)
+    try:
+        a = enroll(store)
+        store.session_heartbeat(a["session_handle"], activity="idle", mode="prompting")
+        assert store.agent(a["agent"]["id"])["mode"] == "prompting"
+    finally:
+        store.close()

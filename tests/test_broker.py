@@ -16,9 +16,11 @@ class Adapter:
         self.error = error
         self.callback = callback
         self.delivered = []
+        self.modes = []
 
-    async def deliver(self, agent, envelope):
+    async def deliver(self, agent, envelope, sender_mode=None):
         self.delivered.append(envelope)
+        self.modes.append(sender_mode)
         if self.callback:
             self.callback(envelope)
         if self.error:
@@ -73,7 +75,7 @@ async def test_slow_recipient_does_not_block_another_recipient(tmp_path):
     delivered = []
 
     class SlowAdapter:
-        async def deliver(self, agent, envelope):
+        async def deliver(self, agent, envelope, sender_mode=None):
             delivered.append(envelope["id"])
             if agent["name"] == "slow":
                 await release.wait()
@@ -128,4 +130,25 @@ async def test_malformed_request_does_not_stop_broker(tmp_path):
                 assert response["error"]["code"] == "invalid_input"
                 writer.close()
                 await writer.wait_closed()
+        store.close()
+
+
+async def test_delivery_attests_the_senders_latest_mode(tmp_path):
+    store = Store(tmp_path / "db")
+    try:
+        a, b = enroll(store), enroll(store, "b", "claude")
+        adapter = Adapter()
+        broker = Broker(store, adapter)
+        for mode in ("bypass", None):
+            store.session_heartbeat(a["session_handle"], activity="working", mode=mode)
+            send(store, a, b)
+            await broker.deliver_pending()
+            store.ack(b["session_handle"], adapter.delivered[-1]["id"])
+        assert adapter.modes == ["bypass", None]
+        with pytest.raises(WireError):
+            store.session_heartbeat(
+                b["session_handle"], activity="working", mode="bypassPermissions"
+            )
+        assert "mode" not in adapter.delivered[0]["sender"]
+    finally:
         store.close()

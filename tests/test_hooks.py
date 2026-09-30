@@ -135,3 +135,18 @@ async def test_first_prompt_can_enroll_after_startup_discovery_was_unavailable(
     session = store.sessions()["sessions"][0]
     assert session["native_id"] == "new-native" and session["activity"] == "working"
     assert len(list((state / "identities").glob("*.json"))) == 1
+
+
+@pytest.mark.parametrize(
+    "permission_mode,expected",
+    [("bypassPermissions", "bypass"), ("acceptEdits", "prompting"), ("plan", None), (None, None)],
+)
+async def test_hook_records_the_sessions_permission_class(environment, permission_mode, expected):
+    state, store = environment
+    a = enroll(store, runtime="claude")
+    write_identity(state, a)
+    payload = {"session_id": a["agent"]["native_id"], "hook_event_name": "PreToolUse"}
+    if permission_mode:
+        payload["permission_mode"] = permission_mode
+    assert await run_hook(state, "claude", payload) == {}
+    assert store.agent(a["agent"]["id"])["mode"] == expected

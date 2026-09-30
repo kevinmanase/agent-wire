@@ -41,7 +41,8 @@ class Store:
             CREATE TABLE IF NOT EXISTS agents (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, runtime TEXT NOT NULL,
                 native_id TEXT NOT NULL, endpoint TEXT NOT NULL, cwd TEXT NOT NULL,
-                credential TEXT NOT NULL UNIQUE, active INTEGER NOT NULL, created REAL NOT NULL
+                credential TEXT NOT NULL UNIQUE, active INTEGER NOT NULL, created REAL NOT NULL,
+                mode TEXT
             );
             CREATE UNIQUE INDEX IF NOT EXISTS live_name ON agents(name) WHERE active=1;
             CREATE TABLE IF NOT EXISTS messages (
@@ -64,6 +65,8 @@ class Store:
                 needs_update INTEGER NOT NULL DEFAULT 1
             );
         """)
+        if "mode" not in {c["name"] for c in self.db.execute("PRAGMA table_info(agents)")}:
+            self.db.execute("ALTER TABLE agents ADD COLUMN mode TEXT")
         self.db.execute(
             "UPDATE messages SET status='unknown', detail='Broker restarted during delivery' "
             "WHERE status='delivering'"
@@ -100,7 +103,8 @@ class Store:
                 (runtime, native_id),
             )
             self.db.execute(
-                "INSERT INTO agents VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO agents (id,name,runtime,native_id,endpoint,cwd,credential,active,"
+                "created) VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     agent_id,
                     name,
@@ -191,12 +195,22 @@ class Store:
         )
         return self.public_agent(self.agent(agent["id"]))
 
-    def session_heartbeat(self, token: str, *, activity: str, new_turn: bool = False) -> dict:
+    def session_heartbeat(
+        self, token: str, *, activity: str, new_turn: bool = False, mode: str | None = None
+    ) -> dict:
         agent = self.authenticate(token)
-        if activity not in ("working", "waiting", "idle") or type(new_turn) is not bool:
+        if (
+            activity not in ("working", "waiting", "idle")
+            or type(new_turn) is not bool
+            or mode not in (None, "bypass", "prompting")
+        ):
             raise WireError(
-                "invalid_input", "Expected activity working/waiting/idle and boolean new_turn"
+                "invalid_input",
+                "Expected activity working/waiting/idle, boolean new_turn, "
+                "and mode bypass/prompting/null",
             )
+        # The latest hook's permission class; a hook without one clears it rather than go stale.
+        self.db.execute("UPDATE agents SET mode=? WHERE id=?", (mode, agent["id"]))
         self.db.execute(
             "INSERT INTO session_reports (agent_id,last_seen,activity,needs_update) "
             "VALUES (?,?,?,1) "

@@ -37,7 +37,7 @@ Start the conversations you want to connect. `agent-wire discover` prints
 session IDs, current names, sockets, and adapter support. It does not enroll
 every session on the machine. Select the intended conversations explicitly.
 Native versions currently supported are Codex app-server 0.159.x and Claude
-Code 2.1.280. Retest an adapter before changing its allowlist.
+Code 2.1.280, 2.1.285, and 2.1.286. Retest an adapter before changing its allowlist.
 
 Codex must expose its local app-server control WebSocket socket and keep the
 target thread loaded. Discovery looks under

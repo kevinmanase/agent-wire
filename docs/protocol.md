@@ -44,6 +44,11 @@ state and `reported_at` intact. `new_turn` marks an existing report as needing
 an update; only a new `session_update` clears that marker. `session_refresh`
 revalidates the caller's own native endpoint when a context hook runs, allowing
 a resumed conversation to keep its identity and report at a new inbox socket.
+A heartbeat also records the session's permission class from the hook's
+`permission_mode`: `bypass` for `bypassPermissions`, `prompting` for `default`,
+`acceptEdits`, `dontAsk`, and `auto`, and none for `plan` or a missing mode,
+because plan mode can be either class. Each heartbeat replaces the previous
+class, so a hook without a mode clears it rather than leaving it stale.
 It cannot select a different native session. These methods are not MCP tools.
 
 Reports are claims by agents. Hooks do not infer summaries or completion, and
@@ -127,7 +132,7 @@ verify them before widening the allowlist.
 
 ## Claude Code
 
-The adapter targets **Claude Code 2.1.280**, peer protocol 1. It reads live,
+The adapter targets **Claude Code 2.1.280, 2.1.285, and 2.1.286**, peer protocol 1. It reads live,
 same-user session registry records under `~/.claude/sessions` (or
 `CLAUDE_CONFIG_DIR`), verifies the PID and owned Unix socket, and matches the
 native session ID again before every delivery.
@@ -139,6 +144,15 @@ The `from` field identifies the peer transport. The receiver's session fence
 and inbound controls remain in force. No child-agent token or privileged
 origin mode is used. Replies must use Agent Wire's MCP tool, because Codex is
 not a native Claude inbox reply address.
+
+Claude holds a peer message for a session that bypasses permission prompts
+unless the sender states its own permission class, and holds a message whose
+class differs from the recipient's. When the sender's latest heartbeat
+recorded a class, the envelope is wrapped the way Claude's own peer messages
+are: `<cross-session-message from-mode="bypass|prompting">`, a newline, the
+JSON envelope, a newline, and the closing tag. The envelope escapes every `<`
+as `\u003c`, so a peer body cannot close the wrapper. With no recorded class,
+the envelope is sent bare and Claude's inbound policy decides as before.
 
 This adapter uses an **observed internal protocol**, not a promised stable
 Anthropic integration API. It is independent implementation code; no vendor
