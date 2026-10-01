@@ -34,10 +34,10 @@ has no automatic native delivery: consumers explicitly read and acknowledge.
 ## Native runtime prerequisites
 
 Start the conversations you want to connect. `agent-wire discover` prints
-session IDs, current names, sockets, and adapter support. It does not enroll
+session IDs, current names, sockets, and adapter availability. It does not enroll
 every session on the machine. Select the intended conversations explicitly.
-Native versions currently supported are Codex app-server 0.159.x and Claude
-Code 2.1.280, 2.1.285, and 2.1.286. Retest an adapter before changing its allowlist.
+Runtime versions do not gate enrollment, reporting, or delivery. Compatibility
+depends on the native interfaces below, with live identity and socket checks.
 
 Codex must expose its local app-server control WebSocket socket and keep the
 target thread loaded. Discovery looks under
@@ -208,7 +208,6 @@ with `--after` to page through the full list.
 | Observation | Check |
 | --- | --- |
 | `broker_unavailable` | Start the broker with the same state path |
-| `unsupported_version` | Confirm the native app-server/CLI version and adapter allowlist |
 | `recipient_unavailable` | List enrolled agents; verify the current enrollment UUID |
 | `unauthorized` | Use the current session's identity; old registrations are revoked |
 | `submitted` without a receipt | Check receiving runtime policy, then explicitly read the inbox |

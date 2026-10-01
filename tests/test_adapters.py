@@ -9,7 +9,7 @@ import pytest
 from websockets.asyncio.server import unix_serve
 
 from agent_wire.adapters import NativeAdapters
-from agent_wire.errors import DeliveryUnknown, Offline, WireError
+from agent_wire.errors import DeliveryUnknown, Offline
 
 
 @pytest.fixture
@@ -45,10 +45,11 @@ def envelope():
     return {"id": "message-1", "sender": {"id": "sender-1"}, "body": "/clear is plain data"}
 
 
-async def test_codex_preserves_tool_output_and_omits_permission_overrides(sockets):
+@pytest.mark.parametrize("version", ["0.159.0", "0.160.0", "99.0.0"])
+async def test_codex_preserves_tool_output_and_omits_permission_overrides(sockets, version):
     turns = []
     path = sockets / "codex.sock"
-    async with unix_serve(lambda ws: codex_server(ws, turns), path):
+    async with unix_serve(lambda ws: codex_server(ws, turns, version=version), path):
         agent = {
             "runtime": "codex",
             "native_id": "native-thread",
@@ -64,18 +65,11 @@ async def test_codex_preserves_tool_output_and_omits_permission_overrides(socket
     assert json.loads(output["output"])["message"]["body"] == "/clear is plain data"
 
 
-@pytest.mark.parametrize(
-    "loaded,version,error",
-    [
-        (False, "0.159.0", Offline),
-        (True, "0.158.0", WireError),
-    ],
-)
-async def test_codex_does_not_resume_or_support_unknown_protocols(sockets, loaded, version, error):
+async def test_codex_does_not_resume_unloaded_threads(sockets):
     turns = []
     path = sockets / "codex.sock"
-    async with unix_serve(lambda ws: codex_server(ws, turns, loaded=loaded, version=version), path):
-        with pytest.raises(error):
+    async with unix_serve(lambda ws: codex_server(ws, turns, loaded=False), path):
+        with pytest.raises(Offline):
             await NativeAdapters().validate("codex", "native-thread", {"path": str(path)})
     assert turns == []
 
@@ -103,7 +97,8 @@ async def test_codex_resolves_daemon_socket_symlink(sockets):
     assert endpoint == {"path": str(await asyncio.to_thread(path.resolve))}
 
 
-async def test_claude_session_fence_and_native_peer_frame(sockets):
+@pytest.mark.parametrize("version", ["2.1.280", "2.1.287", "99.0.0", None])
+async def test_claude_session_fence_and_native_peer_frame(sockets, version):
     received = asyncio.Queue()
 
     async def accept(reader, writer):
@@ -122,7 +117,7 @@ async def test_claude_session_fence_and_native_peer_frame(sockets):
                 "pid": os.getpid(),
                 "messagingSocketPath": str(path),
                 "peerProtocol": 1,
-                "version": "2.1.280",
+                "version": version,
             }
         )
     )

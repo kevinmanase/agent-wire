@@ -1,15 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import asyncio
+import json
+import os
 import tempfile
 from pathlib import Path
 
 import pytest
+from websockets.asyncio.server import unix_serve
 
+from agent_wire.adapters import NativeAdapters
 from agent_wire.broker import Broker
+from agent_wire.client import call
 from agent_wire.hooks import run_hook
-from agent_wire.paths import write_identity
+from agent_wire.paths import read_identity_record, write_identity
 from agent_wire.store import Store
 
+from .test_adapters import codex_server
 from .test_store import enroll
 
 
@@ -150,3 +156,56 @@ async def test_hook_records_the_sessions_permission_class(environment, permissio
         payload["permission_mode"] = permission_mode
     assert await run_hook(state, "claude", payload) == {}
     assert store.agent(a["agent"]["id"])["mode"] == expected
+
+
+@pytest.mark.parametrize(
+    "runtime,version",
+    [("claude", "2.1.287"), ("claude", "99.0.0"), ("codex", "0.160.0"), ("codex", "99.0.0")],
+)
+async def test_new_runtime_versions_enroll_report_and_refresh(
+    environment, monkeypatch, runtime, version
+):
+    state, store = environment
+    native_id = "native-thread"
+    path = state / "native.sock"
+    turns = []
+    if runtime == "codex":
+        server = await unix_serve(lambda ws: codex_server(ws, turns, version=version), path)
+    else:
+        home = state / "claude"
+        (home / "sessions").mkdir(parents=True)
+        (home / "sessions" / "fixture.json").write_text(
+            json.dumps(
+                {
+                    "sessionId": native_id,
+                    "pid": os.getpid(),
+                    "messagingSocketPath": str(path),
+                    "peerProtocol": 1,
+                    "version": version,
+                }
+            )
+        )
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+        server = await asyncio.start_unix_server(lambda r, w: w.close(), path=path)
+    async with server:
+        codex_socket = str(path) if runtime == "codex" else str(state / "absent.sock")
+        discovered = await NativeAdapters().discover(codex_socket)
+        assert any(s["native_id"] == native_id and s["supported"] for s in discovered["sessions"])
+        payload = {"session_id": native_id, "hook_event_name": "SessionStart"}
+        await run_hook(state, runtime, payload, codex_socket=codex_socket)
+        (identity_file,) = (state / "identities").glob("*.json")
+        token = read_identity_record(identity_file)["session_handle"]
+        await call(state, "session_update", session_handle=token, task="Probe", status="working")
+        result = await run_hook(
+            state,
+            runtime,
+            {**payload, "hook_event_name": "UserPromptSubmit"},
+            codex_socket=codex_socket,
+        )
+        assert token in result["hookSpecificOutput"]["additionalContext"]
+        (session,) = store.sessions()["sessions"]
+        assert session["native_id"] == native_id
+        assert session["report"]["task"] == "Probe"
+        assert session["report"]["needs_update"]
+        assert len(list((state / "identities").glob("*.json"))) == 1
+    assert turns == []

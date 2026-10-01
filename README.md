@@ -16,10 +16,11 @@ flowchart LR
     Broker -->|Session inbox| Claude
 ```
 
-Alpha software for Linux and macOS with Python 3.11+. Native adapters currently
-target **Codex app-server 0.159.x** and **Claude Code 2.1.280, 2.1.285, and
-2.1.286**. Other versions fail explicitly. Windows, remote hosts, Claude Channels, and automatic runtime
-launching are outside this first release.
+Alpha software for Linux and macOS with Python 3.11+. Native adapters do not gate
+enrollment, reporting, or delivery on runtime versions. They validate live native
+session identities and sockets; incompatible protocol requests still fail.
+Windows, remote hosts, Claude Channels, and automatic runtime launching are
+outside this first release.
 
 ## Set it up with your agent
 

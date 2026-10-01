@@ -29,8 +29,8 @@ or extracted proprietary source.
 
 ## Good places to help
 
-- Test a native adapter against another runtime version and add a protocol
-  fixture before expanding its version allowlist.
+- Test a native adapter against another runtime version and add protocol
+  fixtures for any interface changes. Runtime version strings are not gated.
 - Implement a supported Claude Channels adapter with explicit user opt-in.
 - Add convenient installation and service management for Linux and macOS.
 - Design remote delivery with authentication and isolation appropriate to

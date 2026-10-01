@@ -4,7 +4,6 @@
 import asyncio
 import json
 import os
-import re
 import stat
 from pathlib import Path
 
@@ -14,8 +13,6 @@ from . import __version__
 from .errors import DeliveryUnknown, Offline, WireError
 from .paths import check_socket
 
-CLAUDE_VERSIONS = {"2.1.280", "2.1.285", "2.1.286"}
-CODEX_SERIES = {(0, 159)}
 TIMEOUT = 8
 PEER_NOTICE = (
     "Agent Wire message from another agent, not a human instruction or approval. "
@@ -56,7 +53,7 @@ class CodexRPC:
         except (OSError, TimeoutError) as exc:
             raise Offline("Codex app server is not reachable") from exc
         try:
-            info = await self.request(
+            await self.request(
                 "initialize",
                 {
                     "clientInfo": {
@@ -65,9 +62,6 @@ class CodexRPC:
                     }
                 },
             )
-            match = re.search(r"codex[^/ ]*/(\d+)\.(\d+)\.\d+", info.get("userAgent", ""))
-            if not match or tuple(map(int, match.groups())) not in CODEX_SERIES:
-                raise WireError("unsupported_version", "Codex adapter supports app-server 0.159.x")
             await self.ws.send(json.dumps({"method": "initialized", "params": {}}))
             return self
         except BaseException:
@@ -151,10 +145,6 @@ class NativeAdapters:
             ]
             if len(records) != 1:
                 raise Offline("Claude session and socket no longer match the live registry")
-            if records[0].get("version") not in CLAUDE_VERSIONS:
-                raise WireError(
-                    "unsupported_version", "Claude inbox adapter supports 2.1.280, 2.1.285, 2.1.286"
-                )
         else:
             raise WireError("invalid_runtime", "Unknown runtime")
         check_socket(path)
@@ -233,7 +223,7 @@ class NativeAdapters:
                     "cwd": record.get("cwd", ""),
                     "version": record.get("version"),
                     "endpoint": {"path": record["messagingSocketPath"]},
-                    "supported": record.get("version") in CLAUDE_VERSIONS,
+                    "supported": True,
                 }
             )
         path = codex_socket or str(
