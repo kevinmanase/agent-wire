@@ -43,8 +43,10 @@ https://github.com/kevinmanase/agent-wire/blob/main/docs/setup.md for detail.
 4. Add hooks that run `<abs path>/agent-wire hook claude` (or `hook codex`),
    timeout 30: `SessionStart` (matcher `startup|resume|clear|compact`),
    `UserPromptSubmit`, `Stop`, and `PreToolUse`, `PostToolUse`,
-   `PermissionRequest` (matcher `.*`). The tool hooks record this session's
-   permission mode; Claude checks it before delivering to a bypass session.
+   `PermissionRequest` (matcher `.*`). Claude hooks record the sender's
+   permission mode. For Codex, the broker reads its native session metadata,
+   including mailbox enrollments that use the actual Codex thread UUID.
+   Claude checks the sender's mode before delivering to a bypass session.
 5. Copy `skills/agent-wire/SKILL.md` from the repo into this client's
    skills directory (`~/.claude/skills/agent-wire/` or `~/.codex/skills/agent-wire/`).
 

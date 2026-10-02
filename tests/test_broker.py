@@ -136,7 +136,7 @@ async def test_malformed_request_does_not_stop_broker(tmp_path):
 async def test_delivery_attests_the_senders_latest_mode(tmp_path):
     store = Store(tmp_path / "db")
     try:
-        a, b = enroll(store), enroll(store, "b", "claude")
+        a, b = enroll(store, runtime="claude"), enroll(store, "b", "claude")
         adapter = Adapter()
         broker = Broker(store, adapter)
         for mode in ("bypass", None):

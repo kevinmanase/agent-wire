@@ -44,11 +44,12 @@ state and `reported_at` intact. `new_turn` marks an existing report as needing
 an update; only a new `session_update` clears that marker. `session_refresh`
 revalidates the caller's own native endpoint when a context hook runs, allowing
 a resumed conversation to keep its identity and report at a new inbox socket.
-A heartbeat also records the session's permission class from the hook's
+A Claude heartbeat also records the session's permission class from the hook's
 `permission_mode`: `bypass` for `bypassPermissions`, `prompting` for `default`,
 `acceptEdits`, `dontAsk`, and `auto`, and none for `plan` or a missing mode,
 because plan mode can be either class. Each heartbeat replaces the previous
 class, so a hook without a mode clears it rather than leaving it stale.
+Codex sender permissions are resolved separately at delivery time, as described below.
 It cannot select a different native session. These methods are not MCP tools.
 
 Reports are claims by agents. Hooks do not infer summaries or completion, and
@@ -146,12 +147,34 @@ not a native Claude inbox reply address.
 
 Claude holds a peer message for a session that bypasses permission prompts
 unless the sender states its own permission class, and holds a message whose
-class differs from the recipient's. When the sender's latest heartbeat
-recorded a class, the envelope is wrapped the way Claude's own peer messages
+class differs from the recipient's. When the sender's class is known,
+the envelope is wrapped the way Claude's own peer messages
 are: `<cross-session-message from-mode="bypass|prompting">`, a newline, the
 JSON envelope, a newline, and the closing tag. The envelope escapes every `<`
-as `\u003c`, so a peer body cannot close the wrapper. With no recorded class,
-the envelope is sent bare and Claude's inbound policy decides as before.
+as `\u003c`, so a peer body cannot close the wrapper.
+
+For Claude senders, the class comes from the latest hook heartbeat. For Codex
+senders, including Desktop sessions registered as CLI mailboxes with their real
+Codex thread UUID, the broker reads Codex's latest `turn_context` at delivery time.
+It locates the rollout under `$CODEX_HOME/sessions` (default `~/.codex/sessions`),
+requires a unique same-user regular file, and matches its `session_meta.id` to
+the enrollment. No credentials, prompts, tool output, or global configuration
+are used as permission evidence or copied into the broker.
+
+`approval_policy: never` plus `sandbox_policy.type: danger-full-access` maps to
+`bypass`. Known approval policies with a read-only or workspace sandbox, and
+known policies that allow approval checks, map to `prompting`. Unknown policies,
+external sandboxes, missing or ambiguous rollouts, and incomplete metadata remain
+unknown. Reads are bounded to 64 MiB from the tail and 2 MiB per record; exceeding
+either bound also leaves the class unknown. Each delivery reads current metadata,
+so a missing hook field cannot erase it and a cached class cannot survive a change.
+
+With no verified class, the envelope is sent bare and Claude's inbound policy
+decides as before. A `submitted` message then includes a `detail` explaining that
+Claude may hold it for review. This is a diagnostic, not a claim that it was held.
+Acknowledgements and replies remain the evidence of receipt. Resolving a class
+does not re-enroll the sender, change either runtime's settings, resume a thread,
+or retry a previously submitted message.
 
 This adapter uses an **observed internal protocol**, not a promised stable
 Anthropic integration API. It is independent implementation code; no vendor

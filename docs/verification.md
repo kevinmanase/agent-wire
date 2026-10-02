@@ -60,6 +60,21 @@ the enabled user service. New installations still need their own hook review.
 This is a shared list of enrolled, self-reporting sessions, not proof of
 coverage of every running process.
 
+## Codex sender permission metadata (0.3.2)
+
+The suite passes **104 tests**, with lint, formatting, wheel, and source builds.
+New regressions cover native Codex and Desktop mailbox senders, permission changes,
+missing/unknown policies, bounded rollout reads, ambiguous identities, and text
+that imitates permission metadata. An integrated broker/Claude Unix-socket fixture
+verifies that an existing Desktop mailbox enrollment sends the native `from-mode`
+wrapper without re-enrollment or changes to recipient permissions.
+
+Read-only checks against two local Codex session rollouts, including the Desktop
+mailbox involved in the reported hold, resolved their actual unrestricted/no-approval
+settings to `bypass`. These checks used runtime metadata, not another session's
+credential. The new end-to-end delivery test uses a protocol fixture rather than a
+live Claude model; it verifies the outgoing frame, not every recipient policy.
+
 To repeat a live test, use a fresh private state directory and explicit
 session enrollment. Configure the receiving runtime's normal permissions for
 that test session only. Ask it to acknowledge and send one correlated reply,

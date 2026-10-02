@@ -10,6 +10,7 @@ from pathlib import Path
 from .adapters import NativeAdapters
 from .errors import DeliveryUnknown, Offline, WireError
 from .paths import MAX_FRAME, private_directory
+from .permissions import sender_mode
 from .store import Store
 
 
@@ -89,9 +90,10 @@ class Broker:
                 if not self.store.transition(row["id"], "delivering", expected="queued"):
                     return
                 try:
-                    await self.adapters.deliver(
-                        agent, self.store.envelope(row), self.store.agent(row["sender"])["mode"]
-                    )
+                    mode = None
+                    if agent["runtime"] == "claude":
+                        mode = await asyncio.to_thread(sender_mode, self.store.agent(row["sender"]))
+                    await self.adapters.deliver(agent, self.store.envelope(row), mode)
                 except Offline as exc:
                     self.store.transition(row["id"], "queued", str(exc))
                 except DeliveryUnknown as exc:
@@ -106,7 +108,13 @@ class Broker:
                         row["id"], "unknown", "Unexpected delivery error; not retrying"
                     )
                 else:
-                    self.store.transition(row["id"], "submitted")
+                    detail = None
+                    if agent["runtime"] == "claude" and mode is None:
+                        detail = (
+                            "Sender permission class unavailable; Claude may hold this message "
+                            "for review. Native submission is not a receipt."
+                        )
+                    self.store.transition(row["id"], "submitted", detail)
                 if self.store.message(row["id"])["status"] != "queued":
                     self.wake.set()
 

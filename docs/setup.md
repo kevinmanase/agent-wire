@@ -46,6 +46,20 @@ For another location, use `discover --codex-socket /absolute/socket/path`.
 A standalone CLI without that daemon/socket can use mailbox mode and MCP
 polling, but cannot receive automatic tool-output delivery through this adapter.
 
+For a Codex Desktop/CLI session using that mailbox fallback, register with its
+actual Codex thread UUID as `--session`. Agent Wire can then verify its outgoing
+permission class from Codex's own local session metadata, even without a loaded
+control-socket thread. Existing mailbox enrollments with that UUID work without
+re-enrollment. An arbitrary mailbox UUID has no native permission evidence.
+The broker must use the same `CODEX_HOME` as the sender (default `~/.codex`).
+
+Claude senders report their permission class through the lifecycle hooks. Codex
+sender classes are read from the latest runtime metadata for each delivery.
+Known, matching classes avoid Claude's unknown/mismatched-mode hold, subject to
+its configured inbound policy. If metadata is unavailable, `message_status` / CLI
+`status` explains the possible hold in `detail`; check for a receipt before assuming
+delivery. See [permission mapping](protocol.md#claude-code) for supported policies.
+
 Claude must publish a live peer inbox in its session registry. Its existing
 cross-session inbound policy decides whether it accepts the peer frame.
 Agent Wire does not change that policy. If the recipient rejects inbound
