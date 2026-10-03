@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from agent_wire.cli import sessions_table
 from agent_wire.client import call
 from agent_wire.errors import WireError
 from agent_wire.paths import private_directory, read_identity
@@ -111,10 +112,24 @@ async def test_cli_roundtrip_restart_permissions_and_single_owner():
                 "blocked",
                 "--detail",
                 "Need review",
+                "--lane",
+                "api",
+                "--stage",
+                "REVIEW",
+                "--role",
+                "worker",
+                "--ask-to",
+                "kevin",
+                "--ask-text",
+                "Review the API change",
+                "--ask-kind",
+                "act",
             )
             sessions = await cli(state, "sessions", "--status", "blocked")
             assert len(sessions["sessions"]) == 1
             assert sessions["sessions"][0]["name"] == "alice"
+            report = sessions["sessions"][0]["report"]
+            assert report["ask"]["text"] == "Review the API change"
             message = await cli(
                 state,
                 "send",
@@ -130,7 +145,7 @@ async def test_cli_roundtrip_restart_permissions_and_single_owner():
             await stop_broker(process)
             process = await start_broker(state)
             sessions = await cli(state, "sessions", "--status", "blocked")
-            assert sessions["sessions"][0]["report"]["task"] == "CLI registry test"
+            assert sessions["sessions"][0]["report"] == report
             inbox = await cli(state, "inbox", "--identity", bob)
             assert inbox["messages"][0]["id"] == message["id"]
             duplicate = await cli(
@@ -191,3 +206,32 @@ def test_state_directory_must_be_private(tmp_path):
     os.chmod(tmp_path, 0o755)
     with pytest.raises(WireError, match="private directory"):
         private_directory(tmp_path)
+
+
+def table_entry(name, report):
+    return {
+        "name": name,
+        "runtime": "claude",
+        "age_seconds": 3,
+        "freshness": "fresh",
+        "report": report and {"status": "working", "task": "Task", **report},
+    }
+
+
+def test_sessions_table_shows_lane_stage_and_ask_only_when_present():
+    plain = {"sessions": [table_entry("a", {}), table_entry("b", None)], "next_after": None}
+    header = sessions_table(plain).splitlines()[0].split()
+    assert header == ["SESSION", "RUNTIME", "STATUS", "SEEN", "FRESHNESS", "TASK"]
+    ask = {"to": "kevin", "text": "Merge\x1b[2J now?", "kind": "decide", "raised_at": 1}
+    reported = {
+        "sessions": [
+            table_entry("a", {"lane": "api", "stage": "REVIEW", "ask": ask}),
+            table_entry("b", None),
+        ],
+        "next_after": None,
+    }
+    lines = sessions_table(reported).splitlines()
+    assert lines[0].split()[5:] == ["LANE", "STAGE", "ASK", "TASK"]
+    assert "api" in lines[1] and "REVIEW" in lines[1]
+    assert "decide @kevin: Merge\\u001b[2J" in lines[1]
+    assert "\x1b" not in "\n".join(lines)

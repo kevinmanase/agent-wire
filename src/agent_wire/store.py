@@ -7,6 +7,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
+from typing import Literal, get_args
 
 from .errors import WireError
 
@@ -15,6 +16,29 @@ MAX_PENDING = 64
 MAX_HOPS = 8
 PENDING = ("queued", "delivering", "submitted", "unknown")
 WORK_STATES = ("working", "waiting", "blocked", "idle", "done")
+Role = Literal["main", "lead", "worker"]
+AskKind = Literal["decide", "act", "approve"]
+ROLES = get_args(Role)
+ASK_KINDS = get_args(AskKind)
+# Optional report text and its limit in UTF-8 bytes.
+REPORT_TEXT = {
+    "detail": 2048,
+    "repository": 4096,
+    "branch": 256,
+    "ticket": 256,
+    "lane": 64,
+    "stage": 64,
+}
+ASK_FIELDS = ("to", "text", "kind")
+REPORT_COLUMNS = {
+    "lane": "TEXT NOT NULL DEFAULT ''",
+    "stage": "TEXT NOT NULL DEFAULT ''",
+    "role": "TEXT",
+    "ask_to": "TEXT",
+    "ask_text": "TEXT",
+    "ask_kind": "TEXT",
+    "ask_raised_at": "REAL",
+}
 STALE_AFTER = 300
 
 
@@ -65,12 +89,19 @@ class Store:
                 needs_update INTEGER NOT NULL DEFAULT 1
             );
         """)
-        if "mode" not in {c["name"] for c in self.db.execute("PRAGMA table_info(agents)")}:
-            self.db.execute("ALTER TABLE agents ADD COLUMN mode TEXT")
+        self.add_missing_columns("agents", {"mode": "TEXT"})
+        self.add_missing_columns("session_reports", REPORT_COLUMNS)
         self.db.execute(
             "UPDATE messages SET status='unknown', detail='Broker restarted during delivery' "
             "WHERE status='delivering'"
         )
+
+    def add_missing_columns(self, table: str, columns: dict[str, str]):
+        # Databases from older releases gain new columns in place.
+        present = {c["name"] for c in self.db.execute(f"PRAGMA table_info({table})")}
+        for column, declaration in columns.items():
+            if column not in present:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     def close(self):
         self.db.close()
@@ -155,32 +186,61 @@ class Store:
         repository: str = "",
         branch: str = "",
         ticket: str = "",
+        lane: str = "",
+        stage: str = "",
+        role: str | None = None,
+        ask: dict | None = None,
     ) -> dict:
         """Replace the caller's report. Hooks never infer or overwrite these fields."""
         agent = self.authenticate(token)
         bounded_text(task, "task", 512)
         if status not in WORK_STATES:
             raise WireError("invalid_input", f"status must be one of {WORK_STATES}")
-        for name, value, limit in (
-            ("detail", detail, 2048),
-            ("repository", repository, 4096),
-            ("branch", branch, 256),
-            ("ticket", ticket, 256),
-        ):
+        text = dict(
+            detail=detail,
+            repository=repository,
+            branch=branch,
+            ticket=ticket,
+            lane=lane,
+            stage=stage,
+        )
+        for name, value in text.items():
+            limit = REPORT_TEXT[name]
             if not isinstance(value, str) or len(value.encode()) > limit:
                 raise WireError(
                     "invalid_input", f"{name} must be text, at most {limit} UTF-8 bytes"
                 )
+        if role is not None and role not in ROLES:
+            raise WireError("invalid_input", f"role must be one of {ROLES} or null")
+        if ask is not None:
+            # An ask is the agent's claim that it needs a person; the broker never acts on it.
+            if not isinstance(ask, dict) or set(ask) != set(ASK_FIELDS):
+                raise WireError("invalid_input", "ask must be null or an object of to, text, kind")
+            bounded_text(ask["to"], "ask.to", 64)
+            bounded_text(ask["text"], "ask.text", 512)
+            if ask["kind"] not in ASK_KINDS:
+                raise WireError("invalid_input", f"ask.kind must be one of {ASK_KINDS}")
         now = self.clock()
+        row = {
+            "task": task,
+            "status": status,
+            **text,
+            "role": role,
+            **{f"ask_{key}": ask and ask[key] for key in ASK_FIELDS},
+            "reported_at": now,
+            "last_seen": now,
+        }
+        # SET expressions read the previous row, so an unchanged ask keeps its raised_at.
         self.db.execute(
-            "INSERT INTO session_reports "
-            "(agent_id,task,status,detail,repository,branch,ticket,"
-            "reported_at,last_seen,needs_update) "
-            "VALUES (?,?,?,?,?,?,?,?,?,0) ON CONFLICT(agent_id) DO UPDATE SET "
-            "task=excluded.task,status=excluded.status,detail=excluded.detail,"
-            "repository=excluded.repository,branch=excluded.branch,ticket=excluded.ticket,"
-            "reported_at=excluded.reported_at,last_seen=excluded.last_seen,needs_update=0",
-            (agent["id"], task, status, detail, repository, branch, ticket, now, now),
+            f"INSERT INTO session_reports (agent_id,{','.join(row)},ask_raised_at,needs_update) "
+            f"VALUES (:agent_id,{','.join(':' + key for key in row)},:raised_at,0) "
+            "ON CONFLICT(agent_id) DO UPDATE SET "
+            + ",".join(f"{key}=excluded.{key}" for key in row)
+            + ",needs_update=0,ask_raised_at=CASE WHEN excluded.ask_kind IS NULL THEN NULL "
+            "WHEN ask_raised_at IS NOT NULL AND ask_to IS excluded.ask_to "
+            "AND ask_text IS excluded.ask_text AND ask_kind IS excluded.ask_kind "
+            "THEN ask_raised_at ELSE excluded.ask_raised_at END",
+            {**row, "agent_id": agent["id"], "raised_at": now if ask else None},
         )
         return self.session(agent["id"])
 
@@ -237,16 +297,10 @@ class Store:
         )
         if row["reported_at"] is not None:
             result["report"] = {
-                key: row[key]
-                for key in (
-                    "task",
-                    "status",
-                    "detail",
-                    "repository",
-                    "branch",
-                    "ticket",
-                    "reported_at",
-                )
+                key: row[key] for key in ("task", "status", *REPORT_TEXT, "role", "reported_at")
+            }
+            result["report"]["ask"] = row["ask_kind"] and {
+                key: row[f"ask_{key}"] for key in (*ASK_FIELDS, "raised_at")
             }
             result["report"]["needs_update"] = bool(row["needs_update"])
         return result
