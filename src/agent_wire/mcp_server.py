@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import uuid
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
+from typing_extensions import TypedDict
 
 from . import __version__
 from .client import call
