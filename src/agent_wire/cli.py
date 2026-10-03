@@ -12,7 +12,7 @@ from .broker import serve
 from .client import call
 from .errors import WireError
 from .paths import default_state, read_identity, write_identity
-from .store import ASK_KINDS, ROLES, WORK_STATES
+from .store import ASK_FIELDS, ASK_KINDS, REPORT_TEXT, ROLES, WORK_STATES
 
 
 def parser() -> argparse.ArgumentParser:
@@ -53,7 +53,7 @@ def parser() -> argparse.ArgumentParser:
         if name == "report":
             sub.add_argument("--task", required=True)
             sub.add_argument("--status", choices=WORK_STATES, required=True)
-            for field in ("detail", "repository", "branch", "ticket", "lane", "stage"):
+            for field in REPORT_TEXT:
                 sub.add_argument(f"--{field}", default="")
             sub.add_argument("--role", choices=ROLES)
             sub.add_argument("--ask-to", help="Who the ask is for")
@@ -134,30 +134,10 @@ async def run(args):
     token = read_identity(args.identity)
     if args.command == "report":
         ask = {
-            key: value
-            for key in ("to", "text", "kind")
-            if (value := getattr(args, f"ask_{key}")) is not None
+            key: value for key in ASK_FIELDS if (value := getattr(args, f"ask_{key}")) is not None
         }
-        return await call(
-            state,
-            "session_update",
-            session_handle=token,
-            ask=ask or None,
-            **{
-                key: getattr(args, key)
-                for key in (
-                    "task",
-                    "status",
-                    "detail",
-                    "repository",
-                    "branch",
-                    "ticket",
-                    "lane",
-                    "stage",
-                    "role",
-                )
-            },
-        )
+        fields = {key: getattr(args, key) for key in ("task", "status", "role", *REPORT_TEXT)}
+        return await call(state, "session_update", session_handle=token, ask=ask or None, **fields)
     if args.command == "agents":
         return await call(state, "agents_list", session_handle=token)
     if args.command == "inbox":
@@ -189,44 +169,42 @@ def sessions_table(result):
         # Reports are peer data: escape terminal control characters, including ESC.
         return json.dumps(value, ensure_ascii=True)[1:-1]
 
-    def ask_summary(ask):
-        return f"{ask['kind']} @{ask['to']}: {ask['text']}" if ask else ""
-
-    reports = [session["report"] or {} for session in result["sessions"]]
-    optional = [
-        (label, width, read)
-        for label, width, read in (
-            ("LANE", 12, lambda report: report.get("lane", "")),
-            ("STAGE", 12, lambda report: report.get("stage", "")),
-            ("ASK", 32, lambda report: ask_summary(report.get("ask"))),
-        )
-        if any(read(report) for report in reports)
-    ]
     columns = [
         ("SESSION", 32),
         ("RUNTIME", 7),
         ("STATUS", 11),
         ("SEEN", 9),
         ("FRESHNESS", 9),
-        *((label, width) for label, width, _ in optional),
+        ("LANE", 12),
+        ("STAGE", 12),
+        ("ASK", 32),
     ]
-    lines = ["  ".join(label.ljust(width) for label, width in columns) + "  TASK"]
-    for session, report in zip(result["sessions"], reports, strict=True):
+    rows, tasks = [], []
+    for session in result["sessions"]:
+        report = session["report"] or {}
         status = report.get("status", "unreported") + ("*" if report.get("needs_update") else "")
         age = session["age_seconds"]
         seen = "never" if age is None else f"{int(age)}s ago"
-        values = [
-            session["name"],
-            session["runtime"],
-            status,
-            seen,
-            session["freshness"],
-            *(read(report) for _, _, read in optional),
-        ]
-        line = "  ".join(
-            safe(v)[:width].ljust(width) for v, (_, width) in zip(values, columns, strict=True)
+        ask = report.get("ask")
+        rows.append(
+            [
+                session["name"],
+                session["runtime"],
+                status,
+                seen,
+                session["freshness"],
+                report.get("lane", ""),
+                report.get("stage", ""),
+                f"{ask['kind']} @{ask['to']}: {ask['text']}" if ask else "",
+            ]
         )
-        lines.append(line + "  " + safe(report.get("task", "No report yet"))[:100])
+        tasks.append(report.get("task", "No report yet"))
+    # Lane, stage, and ask columns appear only when some entry has them.
+    shown = [i for i in range(len(columns)) if i < 5 or any(row[i] for row in rows)]
+    lines = ["  ".join(columns[i][0].ljust(columns[i][1]) for i in shown) + "  TASK"]
+    for row, task in zip(rows, tasks, strict=True):
+        line = "  ".join(safe(row[i])[: columns[i][1]].ljust(columns[i][1]) for i in shown)
+        lines.append(line + "  " + safe(task)[:100])
     if not result["sessions"]:
         lines.append("No matching enrolled sessions.")
     lines.append("\n* Report predates the latest prompt. Stale means no contact for 5 minutes.")

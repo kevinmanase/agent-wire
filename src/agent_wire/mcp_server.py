@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import uuid
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from typing_extensions import TypedDict
@@ -10,12 +10,13 @@ from . import __version__
 from .client import call
 from .errors import WireError
 from .paths import read_identity
+from .store import AskKind, Role
 
 
 class Ask(TypedDict):
     to: str
     text: str
-    kind: Literal["decide", "act", "approve"]
+    kind: AskKind
 
 
 def make_server(state: Path, identity: Path | None = None) -> MCPServer:
@@ -90,7 +91,7 @@ def make_server(state: Path, identity: Path | None = None) -> MCPServer:
         ticket: str = "",
         lane: str = "",
         stage: str = "",
-        role: Literal["main", "lead", "worker"] | None = None,
+        role: Role | None = None,
         ask: Ask | None = None,
         session_handle: str | None = None,
     ) -> dict[str, Any]:

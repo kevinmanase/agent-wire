@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import json
+import sqlite3
 
 import pytest
 
@@ -15,6 +16,13 @@ def store(tmp_path):
     db = Store(tmp_path / "db")
     yield db
     db.close()
+
+
+@pytest.fixture
+def now(store):
+    now = [1000.0]
+    store.clock = lambda: now[0]
+    return now
 
 
 async def test_reports_are_scoped_to_credential_and_do_not_disclose_it(store):
@@ -186,11 +194,14 @@ def test_invalid_directory_filters(store, fields):
 
 
 ASK = {"to": "kevin", "text": "Merge api before mobile?", "kind": "decide"}
+CLEARED = ("", "", None, None)
 
 
-def test_lane_stage_role_and_ask_are_reported(store):
-    now = [1000.0]
-    store.clock = lambda: now[0]
+def new_fields(report):
+    return report["lane"], report["stage"], report["role"], report["ask"]
+
+
+def test_lane_stage_role_and_ask_are_reported(store, now):
     a = enroll(store)
     report = store.session_update(
         a["session_handle"],
@@ -208,9 +219,7 @@ def test_lane_stage_role_and_ask_are_reported(store):
     assert store.sessions()["sessions"][0]["report"] == report
 
 
-def test_ask_raised_at_is_kept_while_the_same_ask_stays(store):
-    now = [1000.0]
-    store.clock = lambda: now[0]
+def test_ask_raised_at_is_kept_while_the_same_ask_stays(store, now):
     token = enroll(store)["session_handle"]
 
     def update(**fields):
@@ -238,12 +247,10 @@ def test_omitted_report_fields_are_cleared(store):
     full = {"lane": "api", "stage": "REVIEW", "role": "worker", "ask": ASK}
     store.session_update(a["session_handle"], task="Ship API", status="waiting", **full)
     report = store.session_update(a["session_handle"], task="Ship API", status="working")["report"]
-    assert (report["lane"], report["stage"], report["role"], report["ask"]) == ("", "", None, None)
+    assert new_fields(report) == CLEARED
 
 
 def test_old_clients_and_databases_keep_working(tmp_path):
-    import sqlite3
-
     path = tmp_path / "db"
     # The report table as released before lane, stage, role, and ask existed.
     old = sqlite3.connect(path)
@@ -264,12 +271,7 @@ def test_old_clients_and_databases_keep_working(tmp_path):
             a["session_handle"], task="Old client", status="working", ticket="T-1"
         )["report"]
         assert report["ticket"] == "T-1"
-        assert (report["lane"], report["stage"], report["role"], report["ask"]) == (
-            "",
-            "",
-            None,
-            None,
-        )
+        assert new_fields(report) == CLEARED
     finally:
         store.close()
 
