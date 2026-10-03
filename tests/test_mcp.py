@@ -8,7 +8,7 @@ from mcp import Client, StdioServerParameters
 from agent_wire.broker import Broker
 from agent_wire.mcp_server import make_server
 from agent_wire.paths import write_identity
-from agent_wire.store import Store
+from agent_wire.store import FOLD_AFTER, Store
 
 from .test_store import enroll
 
@@ -130,4 +130,27 @@ async def test_bound_stdio_server_uses_its_own_identity():
                 assert result.is_error
             listing = await client.call_tool("sessions_list", {})
             assert listing.structured_content["sessions"][0]["report"] == report
+        store.close()
+
+
+async def test_sessions_list_folds_finished_sessions_unless_asked():
+    with tempfile.TemporaryDirectory() as directory:
+        state = Path(directory)
+        store = Store(state / "db")
+        now = [1000.0]
+        store.clock = lambda: now[0]
+        a, b = enroll(store), enroll(store, "b")
+        store.session_update(a["session_handle"], task="Shipped", status="done")
+        store.session_update(b["session_handle"], task="Working", status="working")
+        now[0] += FOLD_AFTER + 1
+        broker = Broker(store)
+        server = await asyncio.start_unix_server(broker.handle, path=state / "broker.sock")
+        async with server, Client(make_server(state), raise_exceptions=True) as client:
+            folded = (await client.call_tool("sessions_list", {})).structured_content
+            assert [s["name"] for s in folded["sessions"]] == ["b"]
+            assert folded["hidden_finished"] == 1
+            result = await client.call_tool("sessions_list", {"include_finished": True})
+            everything = result.structured_content
+            assert {s["name"] for s in everything["sessions"]} == {"a", "b"}
+            assert everything["hidden_finished"] == 0
         store.close()

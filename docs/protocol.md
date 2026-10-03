@@ -52,10 +52,20 @@ working unchanged.
 `sessions_list` returns active enrollment metadata plus `report` (null until
 published), `activity`, `last_seen`, `age_seconds`, and `freshness`
 (`unseen`, `fresh`, `stale`). No endpoint, credential, prompt, or transcript is
-returned. Filters are `runtime`, `status` (including `unreported`), and
-`include_stale` (default true). Pages use an enrollment-ID `after` cursor,
-`limit` 1–100 (default 50), and a 512 KiB encoded-entry budget. Follow
-`next_after` until null. Concurrent registrations may require a new scan.
+returned. Filters are `runtime`, `status` (including `unreported`),
+`include_stale` (default true), and `include_finished` (default false). Pages
+use an enrollment-ID `after` cursor, `limit` 1–100 (default 50), and a 512 KiB
+encoded-entry budget. Follow `next_after` until null. Concurrent registrations
+may require a new scan.
+
+By default the list folds away finished entries: a `done` report with no
+report or hook contact for more than 6 hours. An entry stays visible while it
+has an open `ask`, a status other than `done`, or any message to or from it in
+`queued`, `delivering`, `submitted`, or `unknown`. `hidden_finished` counts the
+folded entries that match the other filters, across all pages.
+`include_finished: true` shows them and returns a count of 0. Folding is a
+display filter only. It never retires an enrollment, deletes data, or touches
+a conversation, and any new contact brings the entry back.
 
 Hook-only `session_heartbeat` updates activity and last contact, leaving task
 state and `reported_at` intact. `new_turn` marks an existing report as needing

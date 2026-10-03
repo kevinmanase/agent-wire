@@ -40,6 +40,13 @@ REPORT_COLUMNS = {
     "ask_raised_at": "REAL",
 }
 STALE_AFTER = 300
+FOLD_AFTER = 6 * 3600
+# A finished entry: done, no contact for FOLD_AFTER, no open ask, and no message in flight.
+FINISHED = (
+    "COALESCE(r.status,'') = 'done' AND r.last_seen < ? AND r.ask_kind IS NULL "
+    "AND NOT EXISTS (SELECT 1 FROM messages m WHERE (m.sender=a.id OR m.recipient=a.id) "
+    f"AND m.status IN {PENDING})"
+)
 
 
 def digest(value: str) -> str:
@@ -321,19 +328,29 @@ class Store:
         runtime: str | None = None,
         status: str | None = None,
         include_stale: bool = True,
+        include_finished: bool = False,
         after: str = "",
         limit: int = 50,
     ) -> dict:
+        """List active enrollments. Folding finished entries is a display filter only."""
         if runtime is not None and runtime not in ("codex", "claude", "mailbox"):
             raise WireError("invalid_input", "Invalid runtime filter")
         if status is not None and status not in (*WORK_STATES, "unreported"):
             raise WireError("invalid_input", "Invalid status filter")
-        if type(limit) is not int or not 1 <= limit <= 100 or type(include_stale) is not bool:
-            raise WireError("invalid_input", "limit must be 1–100; include_stale must be boolean")
+        if (
+            type(limit) is not int
+            or not 1 <= limit <= 100
+            or type(include_stale) is not bool
+            or type(include_finished) is not bool
+        ):
+            raise WireError(
+                "invalid_input",
+                "limit must be 1–100; include_stale and include_finished must be boolean",
+            )
         if not isinstance(after, str) or len(after) > 64:
             raise WireError("invalid_input", "Invalid session cursor")
         now = self.clock()
-        clauses, params = ["a.active=1", "a.id> ?"], [after]
+        clauses, params = ["a.active=1"], []
         if runtime is not None:
             clauses.append("a.runtime=?")
             params.append(runtime)
@@ -343,11 +360,21 @@ class Store:
         if not include_stale:
             clauses.append("r.last_seen>?")
             params.append(now - STALE_AFTER)
-        rows = self.db.execute(
-            "SELECT a.*,r.* FROM agents a LEFT JOIN session_reports r ON r.agent_id=a.id WHERE "
+        query = (
+            "FROM agents a LEFT JOIN session_reports r ON r.agent_id=a.id WHERE "
             + " AND ".join(clauses)
-            + " ORDER BY a.id LIMIT ?",
-            [*params, limit + 1],
+        )
+        hidden = 0
+        if not include_finished:
+            # Count across all pages so every page reports the same total.
+            hidden = self.db.execute(
+                f"SELECT COUNT(*) {query} AND ({FINISHED})", [*params, now - FOLD_AFTER]
+            ).fetchone()[0]
+            query += f" AND NOT ({FINISHED})"
+            params.append(now - FOLD_AFTER)
+        rows = self.db.execute(
+            f"SELECT a.*,r.* {query} AND a.id>? ORDER BY a.id LIMIT ?",
+            [*params, after, limit + 1],
         )
         sessions, size, more = [], 0, False
         for row in rows:
@@ -363,6 +390,7 @@ class Store:
             "next_after": sessions[-1]["id"] if more else None,
             "generated_at": now,
             "stale_after_seconds": STALE_AFTER,
+            "hidden_finished": hidden,
         }
 
     def resolve(self, target: str):

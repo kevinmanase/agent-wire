@@ -210,7 +210,11 @@ Stale does not mean offline or finished, and idle does not mean done.
 Only enrolled sessions appear. Unreported entries stay explicitly unreported;
 this is not an inventory of every process on the machine. Results are paginated
 (`--after`/`next_after`), stale entries are included by default, and `--fresh`
-filters to recent contact. The CLI prints JSON unless `--table` is requested.
+filters to recent contact. Finished entries are folded away by default: `done`,
+no contact for more than 6 hours, no open ask, and no message in flight. The
+table ends with a line such as `12 finished sessions hidden (--all to show)`,
+and `--all` shows them. Folding only hides entries from the list; it never
+retires or deletes anything. The CLI prints JSON unless `--table` is requested.
 See [reporting and hook setup](docs/setup.md#shared-work-reports) and the
 optional [reporting skill](skills/agent-wire/SKILL.md) for both agents.
 
