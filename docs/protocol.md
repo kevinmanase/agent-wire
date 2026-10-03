@@ -31,6 +31,24 @@ replace prior values. Limits in UTF-8 bytes are task 512, detail 2048,
 repository 4096, branch 256, and ticket 256. The server sets `reported_at` and
 `last_seen` using receipt time; callers cannot choose an owner or timestamps.
 
+Four more optional fields describe where the work sits and what it needs:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `lane` | text, ≤ 64 bytes, default `""` | Which lane the work belongs to, such as `api`. Not checked against a list. |
+| `stage` | text, ≤ 64 bytes, default `""` | Where the work is, such as a ticket-graph node like `REVIEW`. |
+| `role` | `main`, `lead`, `worker`, or null | The main orchestrator, a lane lead, or a worker. |
+| `ask` | object or null | What the session needs from a person: `to` (≤ 64 bytes), `text` (≤ 512 bytes), and `kind` (`decide`, `act`, or `approve`). |
+
+`ask.to` and `ask.text` must be nonempty, and an ask accepts no other keys. In
+`sessions_list` the ask also carries `raised_at`, which the server sets when
+the ask first appears. Resending the same `to`, `text`, and `kind` keeps
+`raised_at`; changing any of them or omitting the ask starts over. Like every
+other optional field, an omitted `lane`, `stage`, `role`, or `ask` is cleared.
+An ask is the agent's claim that it needs a person. It is never approval, and
+the broker never acts on it. Clients that send none of these fields keep
+working unchanged.
+
 `sessions_list` returns active enrollment metadata plus `report` (null until
 published), `activity`, `last_seen`, `age_seconds`, and `freshness`
 (`unseen`, `fresh`, `stale`). No endpoint, credential, prompt, or transcript is

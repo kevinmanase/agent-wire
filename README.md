@@ -189,10 +189,19 @@ agent-wire sessions --runtime claude --status working
 agent-wire report --identity /path/to/own-identity.json \
   --task 'Implement shared session registry' --status working \
   --repository /path/to/repo --branch feature/session-reports
+agent-wire report --identity /path/to/own-identity.json \
+  --task 'Ship the API change' --status waiting --lane api --stage REVIEW \
+  --role worker --ask-to kevin --ask-kind approve --ask-text 'Approve the merge?'
 ```
 
 Reports include a task, `working`/`waiting`/`blocked`/`idle`/`done` status,
-optional detail/repository/branch/ticket, and timestamps. Hooks report activity
+optional detail/repository/branch/ticket, and timestamps. They can also name a
+`lane`, a `stage`, a `role` (`main`, `lead`, or `worker`), and an `ask`: what
+the session needs from a person, with `to`, `text`, and `kind` (`decide`,
+`act`, or `approve`). The broker records when an ask was first raised and keeps
+that time while the same ask stays. An ask is a claim, never approval. The
+table shows lane, stage, and a short ask column when any entry has them.
+Hooks report activity
 and remind the agent to publish; they never infer task summaries or completion.
 After a new prompt, the previous report is marked as needing an update.
 After five minutes without a report or hook heartbeat, the entry is **stale**.

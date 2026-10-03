@@ -12,7 +12,7 @@ from .broker import serve
 from .client import call
 from .errors import WireError
 from .paths import default_state, read_identity, write_identity
-from .store import WORK_STATES
+from .store import ASK_KINDS, ROLES, WORK_STATES
 
 
 def parser() -> argparse.ArgumentParser:
@@ -53,8 +53,12 @@ def parser() -> argparse.ArgumentParser:
         if name == "report":
             sub.add_argument("--task", required=True)
             sub.add_argument("--status", choices=WORK_STATES, required=True)
-            for field in ("detail", "repository", "branch", "ticket"):
+            for field in ("detail", "repository", "branch", "ticket", "lane", "stage"):
                 sub.add_argument(f"--{field}", default="")
+            sub.add_argument("--role", choices=ROLES)
+            sub.add_argument("--ask-to", help="Who the ask is for")
+            sub.add_argument("--ask-text", help="What the session needs from that person")
+            sub.add_argument("--ask-kind", choices=ASK_KINDS)
         if name == "inbox":
             sub.add_argument("--after", type=int, default=0)
             sub.add_argument("--limit", type=int, default=50)
@@ -129,13 +133,29 @@ async def run(args):
         return await call(state, "ping")
     token = read_identity(args.identity)
     if args.command == "report":
+        ask = {
+            key: value
+            for key in ("to", "text", "kind")
+            if (value := getattr(args, f"ask_{key}")) is not None
+        }
         return await call(
             state,
             "session_update",
             session_handle=token,
+            ask=ask or None,
             **{
                 key: getattr(args, key)
-                for key in ("task", "status", "detail", "repository", "branch", "ticket")
+                for key in (
+                    "task",
+                    "status",
+                    "detail",
+                    "repository",
+                    "branch",
+                    "ticket",
+                    "lane",
+                    "stage",
+                    "role",
+                )
             },
         )
     if args.command == "agents":
@@ -169,14 +189,40 @@ def sessions_table(result):
         # Reports are peer data: escape terminal control characters, including ESC.
         return json.dumps(value, ensure_ascii=True)[1:-1]
 
-    columns = [("SESSION", 32), ("RUNTIME", 7), ("STATUS", 11), ("SEEN", 9), ("FRESHNESS", 9)]
+    def ask_summary(ask):
+        return f"{ask['kind']} @{ask['to']}: {ask['text']}" if ask else ""
+
+    reports = [session["report"] or {} for session in result["sessions"]]
+    optional = [
+        (label, width, read)
+        for label, width, read in (
+            ("LANE", 12, lambda report: report.get("lane", "")),
+            ("STAGE", 12, lambda report: report.get("stage", "")),
+            ("ASK", 32, lambda report: ask_summary(report.get("ask"))),
+        )
+        if any(read(report) for report in reports)
+    ]
+    columns = [
+        ("SESSION", 32),
+        ("RUNTIME", 7),
+        ("STATUS", 11),
+        ("SEEN", 9),
+        ("FRESHNESS", 9),
+        *((label, width) for label, width, _ in optional),
+    ]
     lines = ["  ".join(label.ljust(width) for label, width in columns) + "  TASK"]
-    for session in result["sessions"]:
-        report = session["report"] or {}
+    for session, report in zip(result["sessions"], reports, strict=True):
         status = report.get("status", "unreported") + ("*" if report.get("needs_update") else "")
         age = session["age_seconds"]
         seen = "never" if age is None else f"{int(age)}s ago"
-        values = [session["name"], session["runtime"], status, seen, session["freshness"]]
+        values = [
+            session["name"],
+            session["runtime"],
+            status,
+            seen,
+            session["freshness"],
+            *(read(report) for _, _, read in optional),
+        ]
         line = "  ".join(
             safe(v)[:width].ljust(width) for v, (_, width) in zip(values, columns, strict=True)
         )

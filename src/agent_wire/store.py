@@ -15,6 +15,17 @@ MAX_PENDING = 64
 MAX_HOPS = 8
 PENDING = ("queued", "delivering", "submitted", "unknown")
 WORK_STATES = ("working", "waiting", "blocked", "idle", "done")
+ROLES = ("main", "lead", "worker")
+ASK_KINDS = ("decide", "act", "approve")
+REPORT_COLUMNS = {
+    "lane": "TEXT NOT NULL DEFAULT ''",
+    "stage": "TEXT NOT NULL DEFAULT ''",
+    "role": "TEXT",
+    "ask_to": "TEXT",
+    "ask_text": "TEXT",
+    "ask_kind": "TEXT",
+    "ask_raised_at": "REAL",
+}
 STALE_AFTER = 300
 
 
@@ -67,6 +78,10 @@ class Store:
         """)
         if "mode" not in {c["name"] for c in self.db.execute("PRAGMA table_info(agents)")}:
             self.db.execute("ALTER TABLE agents ADD COLUMN mode TEXT")
+        reports = {c["name"] for c in self.db.execute("PRAGMA table_info(session_reports)")}
+        for column, declaration in REPORT_COLUMNS.items():
+            if column not in reports:
+                self.db.execute(f"ALTER TABLE session_reports ADD COLUMN {column} {declaration}")
         self.db.execute(
             "UPDATE messages SET status='unknown', detail='Broker restarted during delivery' "
             "WHERE status='delivering'"
@@ -155,6 +170,10 @@ class Store:
         repository: str = "",
         branch: str = "",
         ticket: str = "",
+        lane: str = "",
+        stage: str = "",
+        role: str | None = None,
+        ask: dict | None = None,
     ) -> dict:
         """Replace the caller's report. Hooks never infer or overwrite these fields."""
         agent = self.authenticate(token)
@@ -166,21 +185,59 @@ class Store:
             ("repository", repository, 4096),
             ("branch", branch, 256),
             ("ticket", ticket, 256),
+            ("lane", lane, 64),
+            ("stage", stage, 64),
         ):
             if not isinstance(value, str) or len(value.encode()) > limit:
                 raise WireError(
                     "invalid_input", f"{name} must be text, at most {limit} UTF-8 bytes"
                 )
+        if role is not None and role not in ROLES:
+            raise WireError("invalid_input", f"role must be one of {ROLES} or null")
+        ask_to = ask_text = ask_kind = None
+        if ask is not None:
+            # An ask is the agent's claim that it needs a person; the broker never acts on it.
+            if not isinstance(ask, dict) or set(ask) != {"to", "text", "kind"}:
+                raise WireError("invalid_input", "ask must be null or an object of to, text, kind")
+            ask_to = bounded_text(ask["to"], "ask.to", 64)
+            ask_text = bounded_text(ask["text"], "ask.text", 512)
+            ask_kind = ask["kind"]
+            if ask_kind not in ASK_KINDS:
+                raise WireError("invalid_input", f"ask.kind must be one of {ASK_KINDS}")
         now = self.clock()
+        # SET expressions read the previous row, so an unchanged ask keeps its raised_at.
         self.db.execute(
             "INSERT INTO session_reports "
-            "(agent_id,task,status,detail,repository,branch,ticket,"
-            "reported_at,last_seen,needs_update) "
-            "VALUES (?,?,?,?,?,?,?,?,?,0) ON CONFLICT(agent_id) DO UPDATE SET "
+            "(agent_id,task,status,detail,repository,branch,ticket,lane,stage,role,"
+            "ask_to,ask_text,ask_kind,ask_raised_at,reported_at,last_seen,needs_update) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0) ON CONFLICT(agent_id) DO UPDATE SET "
             "task=excluded.task,status=excluded.status,detail=excluded.detail,"
             "repository=excluded.repository,branch=excluded.branch,ticket=excluded.ticket,"
+            "lane=excluded.lane,stage=excluded.stage,role=excluded.role,"
+            "ask_to=excluded.ask_to,ask_text=excluded.ask_text,ask_kind=excluded.ask_kind,"
+            "ask_raised_at=CASE WHEN excluded.ask_kind IS NULL THEN NULL "
+            "WHEN ask_raised_at IS NOT NULL AND ask_to IS excluded.ask_to "
+            "AND ask_text IS excluded.ask_text AND ask_kind IS excluded.ask_kind "
+            "THEN ask_raised_at ELSE excluded.ask_raised_at END,"
             "reported_at=excluded.reported_at,last_seen=excluded.last_seen,needs_update=0",
-            (agent["id"], task, status, detail, repository, branch, ticket, now, now),
+            (
+                agent["id"],
+                task,
+                status,
+                detail,
+                repository,
+                branch,
+                ticket,
+                lane,
+                stage,
+                role,
+                ask_to,
+                ask_text,
+                ask_kind,
+                now if ask is not None else None,
+                now,
+                now,
+            ),
         )
         return self.session(agent["id"])
 
@@ -245,9 +302,22 @@ class Store:
                     "repository",
                     "branch",
                     "ticket",
+                    "lane",
+                    "stage",
+                    "role",
                     "reported_at",
                 )
             }
+            result["report"]["ask"] = (
+                None
+                if row["ask_kind"] is None
+                else {
+                    "to": row["ask_to"],
+                    "text": row["ask_text"],
+                    "kind": row["ask_kind"],
+                    "raised_at": row["ask_raised_at"],
+                }
+            )
             result["report"]["needs_update"] = bool(row["needs_update"])
         return result
 

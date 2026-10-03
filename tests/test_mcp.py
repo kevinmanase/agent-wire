@@ -108,4 +108,26 @@ async def test_bound_stdio_server_uses_its_own_identity():
             assert result.structured_content["name"] == "a"
             listing = await client.call_tool("sessions_list", {})
             assert listing.structured_content["sessions"][0]["report"]["task"] == "Bound report"
+            ask = {"to": "kevin", "text": "Approve the merge?", "kind": "approve"}
+            result = await client.call_tool(
+                "session_update",
+                {
+                    "task": "Bound report",
+                    "status": "waiting",
+                    "lane": "api",
+                    "stage": "REVIEW",
+                    "role": "worker",
+                    "ask": ask,
+                },
+            )
+            report = result.structured_content["report"]
+            assert (report["lane"], report["stage"], report["role"]) == ("api", "REVIEW", "worker")
+            assert report["ask"] == {**ask, "raised_at": report["reported_at"]}
+            for bad in ({"role": "boss"}, {"ask": {**ask, "kind": "merge"}}):
+                result = await client.call_tool(
+                    "session_update", {"task": "Bound report", "status": "waiting", **bad}
+                )
+                assert result.is_error
+            listing = await client.call_tool("sessions_list", {})
+            assert listing.structured_content["sessions"][0]["report"] == report
         store.close()

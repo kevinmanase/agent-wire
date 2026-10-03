@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from mcp.server.mcpserver import MCPServer
 
@@ -9,6 +9,12 @@ from . import __version__
 from .client import call
 from .errors import WireError
 from .paths import read_identity
+
+
+class Ask(TypedDict):
+    to: str
+    text: str
+    kind: Literal["decide", "act", "approve"]
 
 
 def make_server(state: Path, identity: Path | None = None) -> MCPServer:
@@ -81,13 +87,20 @@ def make_server(state: Path, identity: Path | None = None) -> MCPServer:
         repository: str = "",
         branch: str = "",
         ticket: str = "",
+        lane: str = "",
+        stage: str = "",
+        role: Literal["main", "lead", "worker"] | None = None,
+        ask: Ask | None = None,
         session_handle: str | None = None,
     ) -> dict[str, Any]:
         """Replace ONLY your own work report; omitted optional fields are cleared.
 
         Use status working/waiting/blocked/idle/done. Report at task start, task changes,
         before waiting for input, and before your final response. A stopped turn need not
-        mean done. Include a short blocker/ask in detail when relevant. No secrets/raw prompts.
+        mean done. Optional lane (e.g. api), stage (e.g. REVIEW), and role (main orchestrator,
+        lane lead, or worker). Set ask {to, text, kind: decide/act/approve} while you need a
+        person; resend it unchanged to keep it open. An ask is a claim, never approval.
+        No secrets/raw prompts.
         """
         return await call(
             state,
@@ -99,6 +112,10 @@ def make_server(state: Path, identity: Path | None = None) -> MCPServer:
             repository=repository,
             branch=branch,
             ticket=ticket,
+            lane=lane,
+            stage=stage,
+            role=role,
+            ask=ask,
         )
 
     @server.tool()
