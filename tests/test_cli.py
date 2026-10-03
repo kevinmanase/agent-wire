@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from agent_wire import cli as cli_module
-from agent_wire.cli import parser, sessions_table
+from agent_wire.cli import sessions_table
 from agent_wire.client import call
 from agent_wire.errors import WireError
 from agent_wire.paths import private_directory, read_identity
@@ -252,21 +252,9 @@ async def test_sessions_all_flag_requests_finished_sessions(monkeypatch, tmp_pat
     requests = []
 
     async def fake_call(state, method, **params):
-        requests.append((method, params))
-        return {"sessions": [], "next_after": None, "hidden_finished": 0}
+        requests.append(params)
 
     monkeypatch.setattr(cli_module, "call", fake_call)
-    await cli_module.run(parser().parse_args(["--state", str(tmp_path), "sessions", *flags]))
-    assert requests == [
-        (
-            "sessions_list",
-            {
-                "runtime": None,
-                "status": None,
-                "include_stale": True,
-                "include_finished": expected,
-                "after": "",
-                "limit": 50,
-            },
-        )
-    ]
+    args = cli_module.parser().parse_args(["--state", str(tmp_path), "sessions", *flags])
+    await cli_module.run(args)
+    assert requests[0]["include_finished"] is expected

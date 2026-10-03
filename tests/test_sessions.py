@@ -8,7 +8,7 @@ from agent_wire.broker import Broker
 from agent_wire.errors import WireError
 from agent_wire.store import FOLD_AFTER, STALE_AFTER, Store
 
-from .test_store import enroll
+from .test_store import enroll, send
 
 
 @pytest.fixture
@@ -341,9 +341,7 @@ def names(page):
     return {session["name"] for session in page["sessions"]}
 
 
-def test_finished_sessions_fold_out_of_the_default_list(store):
-    now = [1000.0]
-    store.clock = lambda: now[0]
+def test_finished_sessions_fold_out_of_the_default_list(store, now):
     finished = enroll(store, "finished")
     store.session_update(finished["session_handle"], task="Shipped", status="done")
     recent = enroll(store, "recent")
@@ -375,19 +373,11 @@ def test_finished_sessions_fold_out_of_the_default_list(store):
 
 @pytest.mark.parametrize("status", ["queued", "delivering", "submitted", "unknown"])
 @pytest.mark.parametrize("direction", ["to", "from"])
-def test_messages_in_flight_keep_finished_sessions_visible(store, status, direction):
-    now = [1000.0]
-    store.clock = lambda: now[0]
+def test_messages_in_flight_keep_finished_sessions_visible(store, now, status, direction):
     finished, peer = enroll(store, "finished"), enroll(store, "peer")
     store.session_update(finished["session_handle"], task="Shipped", status="done")
     sender, recipient = (peer, finished) if direction == "to" else (finished, peer)
-    message = store.send(
-        sender["session_handle"],
-        recipient["agent"]["name"],
-        "hello",
-        idempotency_key="fold",
-        ttl=86400,
-    )
+    message = send(store, sender, recipient, ttl=86400)
     store.db.execute("UPDATE messages SET status=? WHERE id=?", (status, message["id"]))
     now[0] += FOLD_AFTER + 1
     page = store.sessions()
@@ -399,9 +389,7 @@ def test_messages_in_flight_keep_finished_sessions_visible(store, status, direct
     assert page["hidden_finished"] == 1
 
 
-def test_hidden_count_respects_filters_and_pages(store):
-    now = [1000.0]
-    store.clock = lambda: now[0]
+def test_hidden_count_respects_filters_and_pages(store, now):
     for i in range(5):
         a = enroll(store, f"done{i}", "codex" if i % 2 else "claude")
         store.session_update(a["session_handle"], task="Shipped", status="done")
