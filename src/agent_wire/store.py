@@ -15,6 +15,7 @@ MAX_BODY = 65_536
 MAX_PENDING = 64
 MAX_HOPS = 8
 PENDING = ("queued", "delivering", "submitted", "unknown")
+IN_FLIGHT = "(" + ",".join(f"'{status}'" for status in PENDING) + ")"
 WORK_STATES = ("working", "waiting", "blocked", "idle", "done")
 Role = Literal["main", "lead", "worker"]
 AskKind = Literal["decide", "act", "approve"]
@@ -40,6 +41,13 @@ REPORT_COLUMNS = {
     "ask_raised_at": "REAL",
 }
 STALE_AFTER = 300
+FOLD_AFTER = 6 * 3600
+# A finished entry: done, no contact for FOLD_AFTER, no open ask, and no message in flight.
+FINISHED = (
+    "COALESCE(r.status,'') = 'done' AND r.last_seen < ? AND r.ask_kind IS NULL "
+    "AND NOT EXISTS (SELECT 1 FROM messages m WHERE (m.sender=a.id OR m.recipient=a.id) "
+    f"AND m.status IN {IN_FLIGHT})"
+)
 
 
 def digest(value: str) -> str:
@@ -59,7 +67,7 @@ class Store:
         self.clock = clock
         self.db = sqlite3.connect(path, isolation_level=None)
         self.db.row_factory = sqlite3.Row
-        self.db.executescript("""
+        self.db.executescript(f"""
             PRAGMA journal_mode=WAL;
             PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS agents (
@@ -79,6 +87,10 @@ class Store:
                 fingerprint TEXT NOT NULL, UNIQUE(sender,idempotency_key)
             );
             CREATE INDEX IF NOT EXISTS inbox ON messages(recipient,seq);
+            CREATE INDEX IF NOT EXISTS pending_from ON messages(sender)
+                WHERE status IN {IN_FLIGHT};
+            CREATE INDEX IF NOT EXISTS pending_to ON messages(recipient)
+                WHERE status IN {IN_FLIGHT};
             CREATE TABLE IF NOT EXISTS session_reports (
                 agent_id TEXT PRIMARY KEY REFERENCES agents(id),
                 task TEXT NOT NULL DEFAULT '', status TEXT,
@@ -321,19 +333,29 @@ class Store:
         runtime: str | None = None,
         status: str | None = None,
         include_stale: bool = True,
+        include_finished: bool = False,
         after: str = "",
         limit: int = 50,
     ) -> dict:
+        """List active enrollments. Folding finished entries is a display filter only."""
         if runtime is not None and runtime not in ("codex", "claude", "mailbox"):
             raise WireError("invalid_input", "Invalid runtime filter")
         if status is not None and status not in (*WORK_STATES, "unreported"):
             raise WireError("invalid_input", "Invalid status filter")
-        if type(limit) is not int or not 1 <= limit <= 100 or type(include_stale) is not bool:
-            raise WireError("invalid_input", "limit must be 1–100; include_stale must be boolean")
+        if (
+            type(limit) is not int
+            or not 1 <= limit <= 100
+            or type(include_stale) is not bool
+            or type(include_finished) is not bool
+        ):
+            raise WireError(
+                "invalid_input",
+                "limit must be 1–100; include_stale and include_finished must be boolean",
+            )
         if not isinstance(after, str) or len(after) > 64:
             raise WireError("invalid_input", "Invalid session cursor")
         now = self.clock()
-        clauses, params = ["a.active=1", "a.id> ?"], [after]
+        clauses, params = ["a.active=1"], []
         if runtime is not None:
             clauses.append("a.runtime=?")
             params.append(runtime)
@@ -343,11 +365,21 @@ class Store:
         if not include_stale:
             clauses.append("r.last_seen>?")
             params.append(now - STALE_AFTER)
-        rows = self.db.execute(
-            "SELECT a.*,r.* FROM agents a LEFT JOIN session_reports r ON r.agent_id=a.id WHERE "
+        query = (
+            "FROM agents a LEFT JOIN session_reports r ON r.agent_id=a.id WHERE "
             + " AND ".join(clauses)
-            + " ORDER BY a.id LIMIT ?",
-            [*params, limit + 1],
+        )
+        hidden = 0
+        if not include_finished:
+            # Count across all pages so every page reports the same total.
+            params.append(now - FOLD_AFTER)
+            hidden = self.db.execute(
+                f"SELECT COUNT(*) {query} AND ({FINISHED})", params
+            ).fetchone()[0]
+            query += f" AND NOT ({FINISHED})"
+        rows = self.db.execute(
+            f"SELECT a.*,r.* {query} AND a.id>? ORDER BY a.id LIMIT ?",
+            [*params, after, limit + 1],
         )
         sessions, size, more = [], 0, False
         for row in rows:
@@ -363,6 +395,7 @@ class Store:
             "next_after": sessions[-1]["id"] if more else None,
             "generated_at": now,
             "stale_after_seconds": STALE_AFTER,
+            "hidden_finished": hidden,
         }
 
     def resolve(self, target: str):
@@ -455,8 +488,7 @@ class Store:
             if hops > MAX_HOPS:
                 raise WireError("hop_limit", "Reply chain limit reached; wait for human direction")
         pending = self.db.execute(
-            "SELECT COUNT(*) FROM messages WHERE recipient=? "
-            "AND status IN ('queued','delivering','submitted','unknown')",
+            f"SELECT COUNT(*) FROM messages WHERE recipient=? AND status IN {IN_FLIGHT}",
             (target["id"],),
         ).fetchone()[0]
         if pending >= MAX_PENDING:
@@ -508,7 +540,7 @@ class Store:
         self.expire()
         rows = self.db.execute(
             "SELECT * FROM messages WHERE recipient=? AND seq>? "
-            "AND status IN ('queued','delivering','submitted','unknown') ORDER BY seq LIMIT ?",
+            f"AND status IN {IN_FLIGHT} ORDER BY seq LIMIT ?",
             (recipient["id"], after, limit),
         ).fetchall()
         messages, size = [], 0

@@ -2,34 +2,17 @@
 import asyncio
 import json
 import os
-import tempfile
-from pathlib import Path
 
 import pytest
 from websockets.asyncio.server import unix_serve
 
 from agent_wire.adapters import NativeAdapters
-from agent_wire.broker import Broker
 from agent_wire.client import call
 from agent_wire.hooks import run_hook
 from agent_wire.paths import read_identity_record, write_identity
-from agent_wire.store import Store
 
 from .test_adapters import codex_server
 from .test_store import enroll
-
-
-@pytest.fixture
-async def environment():
-    with tempfile.TemporaryDirectory() as directory:
-        state = Path(directory)
-        store = Store(state / "db")
-        server = await asyncio.start_unix_server(Broker(store).handle, path=state / "broker.sock")
-        try:
-            async with server:
-                yield state, store
-        finally:
-            store.close()
 
 
 @pytest.mark.parametrize("runtime", ["codex", "claude"])

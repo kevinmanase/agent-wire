@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from agent_wire import cli as cli_module
 from agent_wire.cli import sessions_table
 from agent_wire.client import call
 from agent_wire.errors import WireError
@@ -235,3 +236,25 @@ def test_sessions_table_shows_lane_stage_and_ask_only_when_present():
     assert "api" in lines[1] and "REVIEW" in lines[1]
     assert "decide @kevin: Merge\\u001b[2J" in lines[1]
     assert "\x1b" not in "\n".join(lines)
+
+
+def test_sessions_table_reports_hidden_finished_sessions():
+    result = {"sessions": [table_entry("a", {})], "next_after": None, "hidden_finished": 0}
+    assert "hidden" not in sessions_table(result)
+    result["hidden_finished"] = 1
+    assert sessions_table(result).endswith("1 finished session hidden (--all to show)")
+    result["hidden_finished"] = 12
+    assert sessions_table(result).endswith("12 finished sessions hidden (--all to show)")
+
+
+@pytest.mark.parametrize(("flags", "expected"), [((), False), (("--all",), True)])
+async def test_sessions_all_flag_requests_finished_sessions(monkeypatch, tmp_path, flags, expected):
+    requests = []
+
+    async def fake_call(state, method, **params):
+        requests.append(params)
+
+    monkeypatch.setattr(cli_module, "call", fake_call)
+    args = cli_module.parser().parse_args(["--state", str(tmp_path), "sessions", *flags])
+    await cli_module.run(args)
+    assert requests[0]["include_finished"] is expected

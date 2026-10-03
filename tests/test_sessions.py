@@ -6,9 +6,9 @@ import pytest
 
 from agent_wire.broker import Broker
 from agent_wire.errors import WireError
-from agent_wire.store import STALE_AFTER, Store
+from agent_wire.store import FOLD_AFTER, STALE_AFTER, Store
 
-from .test_store import enroll
+from .test_store import enroll, send
 
 
 @pytest.fixture
@@ -184,6 +184,7 @@ def test_invalid_reports_leave_previous_report_unchanged(store, fields):
         {"limit": 101},
         {"after": 5},
         {"include_stale": "false"},
+        {"include_finished": 1},
         {"runtime": "other"},
         {"status": "other"},
     ],
@@ -334,3 +335,74 @@ def test_report_fields_at_their_bounds(store):
     )["report"]
     assert report["lane"] == "é" * 32
     assert report["ask"]["text"] == "é" * 256
+
+
+def names(page):
+    return {session["name"] for session in page["sessions"]}
+
+
+def test_finished_sessions_fold_out_of_the_default_list(store, now):
+    finished = enroll(store, "finished")
+    store.session_update(finished["session_handle"], task="Shipped", status="done")
+    recent = enroll(store, "recent")
+    blocked = enroll(store, "blocked")
+    store.session_update(blocked["session_handle"], task="Need access", status="blocked")
+    asking = enroll(store, "asking")
+    store.session_update(asking["session_handle"], task="Shipped", status="done", ask=ASK)
+    unreported = enroll(store, "unreported")
+    store.session_heartbeat(unreported["session_handle"], activity="idle")
+
+    now[0] += FOLD_AFTER
+    store.session_update(recent["session_handle"], task="Shipped", status="done")
+    # Exactly six hours without contact is not yet more than six hours.
+    assert store.sessions()["hidden_finished"] == 0
+    now[0] += 1
+    page = store.sessions()
+    assert names(page) == {"recent", "blocked", "asking", "unreported"}
+    assert page["hidden_finished"] == 1
+    everything = store.sessions(include_finished=True)
+    assert len(everything["sessions"]) == 5
+    assert everything["hidden_finished"] == 0
+    # Folding is a display filter: the enrollment and report stay intact.
+    assert store.authenticate(finished["session_handle"])["active"] == 1
+    assert store.session(finished["agent"]["id"])["report"]["status"] == "done"
+    # A heartbeat counts as contact and brings the entry back.
+    store.session_heartbeat(finished["session_handle"], activity="idle")
+    assert "finished" in names(store.sessions())
+
+
+@pytest.mark.parametrize("status", ["queued", "delivering", "submitted", "unknown"])
+@pytest.mark.parametrize("direction", ["to", "from"])
+def test_messages_in_flight_keep_finished_sessions_visible(store, now, status, direction):
+    finished, peer = enroll(store, "finished"), enroll(store, "peer")
+    store.session_update(finished["session_handle"], task="Shipped", status="done")
+    sender, recipient = (peer, finished) if direction == "to" else (finished, peer)
+    message = send(store, sender, recipient, ttl=86400)
+    store.db.execute("UPDATE messages SET status=? WHERE id=?", (status, message["id"]))
+    now[0] += FOLD_AFTER + 1
+    page = store.sessions()
+    assert names(page) == {"finished", "peer"}
+    assert page["hidden_finished"] == 0
+    store.db.execute("UPDATE messages SET status='acknowledged' WHERE id=?", (message["id"],))
+    page = store.sessions()
+    assert names(page) == {"peer"}
+    assert page["hidden_finished"] == 1
+
+
+def test_hidden_count_respects_filters_and_pages(store, now):
+    for i in range(5):
+        a = enroll(store, f"done{i}", "codex" if i % 2 else "claude")
+        store.session_update(a["session_handle"], task="Shipped", status="done")
+    now[0] += FOLD_AFTER + 1
+    for i in range(3):
+        a = enroll(store, f"live{i}")
+        store.session_update(a["session_handle"], task="Working", status="working")
+    first = store.sessions(limit=2)
+    second = store.sessions(limit=2, after=first["next_after"])
+    assert first["hidden_finished"] == second["hidden_finished"] == 5
+    assert len(first["sessions"]) + len(second["sessions"]) == 3
+    assert second["next_after"] is None
+    assert store.sessions(runtime="codex")["hidden_finished"] == 2
+    assert store.sessions(status="done")["sessions"] == []
+    # Fresh-only listings already leave these entries out as stale.
+    assert store.sessions(include_stale=False)["hidden_finished"] == 0

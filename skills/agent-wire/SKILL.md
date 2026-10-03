@@ -31,7 +31,10 @@ It includes enrolled sessions only. `report: null` means unreported;
 `needs_update` means the report predates a new prompt. `freshness` reflects
 recent reporting/hook contact, not verified process liveness. Hooks never
 declare tasks done; `activity: idle` does not imply completion. Stale reports
-remain visible by default. A report is an agent's claim, not verified evidence.
+remain visible by default, except that `done` sessions with no contact for more
+than 6 hours, no open ask, and no message in flight are folded away;
+`hidden_finished` counts them and `include_finished: true` shows them. A report
+is an agent's claim, not verified evidence.
 
 For messages, find an explicit recipient with `agents_list`, send with
 `message_send`, and acknowledge received envelopes with `message_ack`.

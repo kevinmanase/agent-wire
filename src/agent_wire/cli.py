@@ -42,6 +42,9 @@ def parser() -> argparse.ArgumentParser:
     sessions.add_argument(
         "--fresh", action="store_true", help="Only sessions seen in the last 5 minutes"
     )
+    sessions.add_argument(
+        "--all", action="store_true", help="Include done sessions without contact for 6 hours"
+    )
     sessions.add_argument("--after", default="")
     sessions.add_argument("--limit", type=int, default=50)
     sessions.add_argument("--table", action="store_true", help="Show a readable terminal table")
@@ -126,6 +129,7 @@ async def run(args):
             runtime=args.runtime,
             status=args.status,
             include_stale=not args.fresh,
+            include_finished=args.all,
             after=args.after,
             limit=args.limit,
         )
@@ -208,6 +212,9 @@ def sessions_table(result):
     if not result["sessions"]:
         lines.append("No matching enrolled sessions.")
     lines.append("\n* Report predates the latest prompt. Stale means no contact for 5 minutes.")
+    if hidden := result.get("hidden_finished"):
+        noun = "session" if hidden == 1 else "sessions"
+        lines.append(f"{hidden} finished {noun} hidden (--all to show)")
     if result["next_after"]:
         lines.append(f"More entries: use --after {result['next_after']}")
     return "\n".join(lines)
