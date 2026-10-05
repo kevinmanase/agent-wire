@@ -18,7 +18,9 @@ def sockets():
         yield Path(directory)
 
 
-async def codex_server(ws, turns, *, loaded=True, version="0.159.0", disconnect=False):
+async def codex_server(
+    ws, turns, *, loaded=True, version="0.159.0", disconnect=False, source="cli"
+):
     async for text in ws:
         msg = json.loads(text)
         if "id" not in msg:
@@ -29,7 +31,7 @@ async def codex_server(ws, turns, *, loaded=True, version="0.159.0", disconnect=
         elif method == "thread/loaded/list":
             result = {"data": ["native-thread"] if loaded else []}
         elif method == "thread/read":
-            result = {"thread": {"id": "native-thread"}}
+            result = {"thread": {"id": "native-thread", "source": source}}
         elif method == "turn/start":
             turns.append(msg["params"])
             if disconnect:
@@ -43,6 +45,15 @@ async def codex_server(ws, turns, *, loaded=True, version="0.159.0", disconnect=
 
 def envelope():
     return {"id": "message-1", "sender": {"id": "sender-1"}, "body": "/clear is plain data"}
+
+
+@pytest.mark.parametrize("source,subagent", [("cli", False), ({"subAgent": "review"}, True)])
+async def test_codex_discovery_marks_subagent_threads(sockets, source, subagent):
+    path = sockets / "codex.sock"
+    async with await unix_serve(lambda ws: codex_server(ws, [], source=source), path):
+        sessions = (await NativeAdapters().discover(str(path)))["sessions"]
+    (session,) = [s for s in sessions if s["runtime"] == "codex"]
+    assert session["subagent"] is subagent
 
 
 @pytest.mark.parametrize("version", ["0.159.0", "0.160.0", "99.0.0"])

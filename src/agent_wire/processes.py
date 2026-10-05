@@ -49,6 +49,18 @@ def process_starts(pids) -> dict[int, float | None]:
     return starts
 
 
+def is_app_server(pid: int) -> bool:
+    """Whether this Codex process is an app server (the daemon or the desktop app's).
+
+    An app server runs many threads at once; terminal Codex (--no-daemon) runs one.
+    If ps fails, assume an app server, so nothing is retired.
+    """
+    try:
+        return "app-server" in ps("-ww", "-o", "args=", "-p", str(pid)).split()
+    except (OSError, subprocess.SubprocessError):
+        return True
+
+
 def ancestor(name: str) -> int | None:
     """The nearest ancestor of this process whose executable is called `name`."""
     try:

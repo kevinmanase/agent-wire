@@ -253,6 +253,8 @@ class NativeAdapters:
                             "cwd": thread.get("cwd", ""),
                             "supported": True,
                             "endpoint": {"path": path},
+                            "subagent": isinstance(source := thread.get("source"), dict)
+                            and "subAgent" in source,
                         }
                     )
         except (WireError, OSError) as exc:

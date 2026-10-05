@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal, get_args
 
 from .errors import WireError
-from .processes import process_starts
+from .processes import is_app_server, process_starts
 
 MAX_BODY = 65_536
 MAX_PENDING = 64
@@ -45,6 +45,8 @@ STALE_AFTER = 300
 # Linux derives a process's start time from a wall-clock boot time, which jitters and moves
 # when the clock steps. A start this far from the recorded one means a reused pid.
 START_SLACK = 60
+# Other active enrollments of a runtime in a process: (runtime, id, pid, started, slack).
+SAME_PROCESS = "active=1 AND runtime=? AND id!=? AND pid=? AND abs(started-?)<=?"
 FOLD_AFTER = 6 * 3600
 # A finished entry: done, no contact for FOLD_AFTER, no open ask, and no message in flight.
 FINISHED = (
@@ -100,9 +102,12 @@ def raised_at(new: str) -> str:
 
 
 class Store:
-    def __init__(self, path: Path, clock=time.time, processes=process_starts):
+    def __init__(
+        self, path: Path, clock=time.time, processes=process_starts, app_server=is_app_server
+    ):
         self.clock = clock
         self.processes = processes
+        self.app_server = app_server
         self.db = sqlite3.connect(path, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(f"""
@@ -168,19 +173,28 @@ class Store:
         started = pid and self.processes([pid]).get(pid)
         return (pid, started) if started else (None, None)
 
-    def retire_replaced(self, agent_id: str, runtime: str, process: tuple):
-        """Retire other Claude enrollments in this one's process, exactly as retire does.
+    def replaces(self, agent_id: str, runtime: str, process: tuple) -> bool:
+        """Whether this session ends an earlier one in its process, after /clear or /resume.
 
-        Claude Code runs one conversation per process, so after /clear or /resume the
-        process's previous conversation has ended. Codex is exempt: one app server runs
-        many threads. Without a recorded process, nothing matches.
+        Claude Code runs one conversation per process and terminal Codex one thread; a Codex
+        app server runs many. Reads ps only when an earlier one exists.
         """
-        if runtime == "claude":
-            self.db.execute(
-                "UPDATE agents SET active=0 WHERE active=1 AND runtime=? AND id!=? AND pid=? "
-                "AND abs(started-?)<=?",
+        if (
+            runtime not in ("claude", "codex")
+            or not self.db.execute(
+                f"SELECT 1 FROM agents WHERE {SAME_PROCESS}",
                 (runtime, agent_id, *process, START_SLACK),
-            )
+            ).fetchone()
+        ):
+            return False
+        return runtime == "claude" or not self.app_server(process[0])
+
+    def retire_replaced(self, agent_id: str, runtime: str, process: tuple):
+        """Retire other enrollments of this runtime in this one's process, as retire does."""
+        self.db.execute(
+            f"UPDATE agents SET active=0 WHERE {SAME_PROCESS}",
+            (runtime, agent_id, *process, START_SLACK),
+        )
 
     def register(
         self, name: str, runtime: str, native_id: str, endpoint: dict, cwd="", pid=None
@@ -199,6 +213,7 @@ class Store:
         self.retire_exited([name])
         token = secrets.token_urlsafe(32)
         agent_id = str(uuid.uuid4())
+        replaces = self.replaces(agent_id, runtime, process)  # Can read ps: before the lock.
         self.db.execute("BEGIN IMMEDIATE")
         try:
             # Retire before the name check, so a replacement can take its predecessor's name.
@@ -206,7 +221,8 @@ class Store:
                 "UPDATE agents SET active=0 WHERE runtime=? AND native_id=? AND active=1",
                 (runtime, native_id),
             )
-            self.retire_replaced(agent_id, runtime, process)
+            if replaces:
+                self.retire_replaced(agent_id, runtime, process)
             if self.db.execute(
                 "SELECT 1 FROM agents WHERE name=? AND active=1", (name,)
             ).fetchone():
@@ -366,7 +382,8 @@ class Store:
             "UPDATE agents SET endpoint=?,cwd=?,pid=?,started=? WHERE id=?",
             (json.dumps(endpoint), cwd, *process, agent["id"]),
         )
-        self.retire_replaced(agent["id"], agent["runtime"], process)
+        if self.replaces(agent["id"], agent["runtime"], process):
+            self.retire_replaced(agent["id"], agent["runtime"], process)
         return self.public_agent(self.agent(agent["id"]))
 
     def session_heartbeat(
