@@ -105,6 +105,9 @@ async def run_hook(
         if len(targets) != 1:
             raise WireError("missing_session", "Could not discover exactly this hook's session")
         target = targets[0]
+        # A subagent thread runs in its parent's process; enrolling it would replace the parent.
+        if target.get("subagent"):
+            return {}
         if runtime == "codex":
             # Codex metadata names no process. The hook runs under the Codex process itself.
             # Sent only when known: a broker from before 0.4.0 rejects a pid key, even null.

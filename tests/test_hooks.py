@@ -75,6 +75,22 @@ async def test_claude_child_hook_does_not_write_parent_report(environment):
     assert store.session(a["agent"]["id"])["last_seen"] is None
 
 
+async def test_codex_subagent_thread_does_not_enroll(environment, monkeypatch):
+    state, store = environment
+    parent = enroll(store, "parent", "codex", 100)
+    subagent = {"runtime": "codex", "native_id": "sub", "endpoint": {}, "cwd": "", "subagent": True}
+
+    async def discover(self, codex_socket):
+        return {"sessions": [subagent]}
+
+    monkeypatch.setattr("agent_wire.hooks.NativeAdapters.discover", discover)
+    # Its parent runs in the same terminal Codex process, which it must not replace.
+    monkeypatch.setattr("agent_wire.hooks.ancestor", lambda name: 100)
+    payload = {"session_id": "sub", "hook_event_name": "SessionStart"}
+    assert await run_hook(state, "codex", payload) == {}
+    assert [a["id"] for a in store.agents()] == [parent["agent"]["id"]]
+
+
 @pytest.mark.parametrize(
     "runtime,tool",
     [
