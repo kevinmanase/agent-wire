@@ -208,8 +208,14 @@ that time while the same ask stays. An ask is a claim, never approval.
 label, a script, or the agent itself can raise one without resending the
 report; `report` still replaces everything, ask included. The table shows lane,
 stage, and a short ask column when any entry has them.
-Hooks report activity
-and remind the agent to publish; they never infer task summaries or completion.
+
+Write `ticket` so a floor can group every report on the same work: the Linear
+issue key, such as `ENG-2649`, or `<repo>#<number>` for the GitHub issue, such
+as `team-floor#11`, or for the pull request when there is no issue, such as
+`team-floor#14`. Put nothing else in the field: no title and no `PR` prefix.
+
+Hooks report activity and remind the agent to publish; they never infer task
+summaries or completion.
 After a new prompt, the previous report is marked as needing an update.
 After five minutes without a report or hook heartbeat, the entry is **stale**.
 Stale does not mean offline or finished, and idle does not mean done.

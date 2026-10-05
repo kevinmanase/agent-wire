@@ -17,6 +17,12 @@ on each update; include those that still apply. Keep secrets and raw prompts
 out of reports. Report the task you are actually doing, not an inferred task
 for another agent.
 
+Write `ticket` so every session on the same work groups together. For Linear
+work, use the issue key, such as `ENG-2649`. For GitHub work, use
+`<repo>#<number>` for the issue you are working on, such as `team-floor#11`,
+or the pull request when there is no issue, such as `team-floor#14`. Put
+nothing else in the field: no title and no `PR` prefix.
+
 Optional `lane` (such as `api`), `stage` (such as `REVIEW`), and `role`
 (`main` orchestrator, lane `lead`, or `worker`) place your work on the shared
 floor. When you need a person, set `ask` to `{to, text, kind}`, with `kind`
