@@ -168,6 +168,20 @@ class Store:
         started = pid and self.processes([pid]).get(pid)
         return (pid, started) if started else (None, None)
 
+    def retire_replaced(self, agent_id: str, runtime: str, process: tuple):
+        """Retire other Claude enrollments in this one's process, exactly as retire does.
+
+        Claude Code runs one conversation per process, so after /clear or /resume the
+        process's previous conversation has ended. Codex is exempt: one app server runs
+        many threads. Without a recorded process, nothing matches.
+        """
+        if runtime == "claude":
+            self.db.execute(
+                "UPDATE agents SET active=0 WHERE active=1 AND runtime=? AND id!=? AND pid=? "
+                "AND abs(started-?)<=?",
+                (runtime, agent_id, *process, START_SLACK),
+            )
+
     def register(
         self, name: str, runtime: str, native_id: str, endpoint: dict, cwd="", pid=None
     ) -> dict:
@@ -185,15 +199,16 @@ class Store:
         agent_id = str(uuid.uuid4())
         self.db.execute("BEGIN IMMEDIATE")
         try:
-            clash = self.db.execute(
-                "SELECT * FROM agents WHERE name=? AND active=1", (name,)
-            ).fetchone()
-            if clash and (clash["native_id"], clash["runtime"]) != (native_id, runtime):
-                raise WireError("name_in_use", "An active session already owns that name")
+            # Retire before the name check, so a replacement can take its predecessor's name.
             self.db.execute(
                 "UPDATE agents SET active=0 WHERE runtime=? AND native_id=? AND active=1",
                 (runtime, native_id),
             )
+            self.retire_replaced(agent_id, runtime, process)
+            if self.db.execute(
+                "SELECT 1 FROM agents WHERE name=? AND active=1", (name,)
+            ).fetchone():
+                raise WireError("name_in_use", "An active session already owns that name")
             self.db.execute(
                 "INSERT INTO agents (id,name,runtime,native_id,endpoint,cwd,credential,active,"
                 "created,pid,started) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -340,10 +355,12 @@ class Store:
         if not isinstance(cwd, str) or len(cwd.encode()) > 4096:
             raise WireError("invalid_input", "cwd must be text, at most 4096 UTF-8 bytes")
         # A resumed conversation can run in a new process.
+        process = self.process(pid)
         self.db.execute(
             "UPDATE agents SET endpoint=?,cwd=?,pid=?,started=? WHERE id=?",
-            (json.dumps(endpoint), cwd, *self.process(pid), agent["id"]),
+            (json.dumps(endpoint), cwd, *process, agent["id"]),
         )
+        self.retire_replaced(agent["id"], agent["runtime"], process)
         return self.public_agent(self.agent(agent["id"]))
 
     def session_heartbeat(

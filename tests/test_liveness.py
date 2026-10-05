@@ -12,6 +12,7 @@ from agent_wire.processes import ancestor, process_starts, ps
 from agent_wire.store import Store
 
 from .test_broker import Adapter
+from .test_sessions import ASK
 from .test_store import enroll, send
 
 START = 1_791_200_000.0
@@ -96,6 +97,32 @@ def test_a_resumed_conversation_records_its_new_process(store, processes):
     assert active(store) == {"a"}
     del processes.table[200]
     assert active(store) == set()
+
+
+def test_a_new_claude_conversation_replaces_the_one_in_its_process(store, processes):
+    old, other = enroll(store, "worker", "claude", 100), enroll(store, "other", "claude", 200)
+    enroll(store, "unrecorded", "claude")
+    store.session_update(old["session_handle"], task="Ship", status="waiting", ask=ASK)
+    processes.table[100] = START + 30  # A clock step moves the same process's start.
+    # After /clear, the same process enrolls its new session, under the same hook --name.
+    enroll(store, "worker", "claude", 100)
+    assert store.agent(old["agent"]["id"])["active"] == 0
+    assert active(store) == {"worker", "other", "unrecorded"}
+    assert [s["report"] for s in store.sessions()["sessions"]] == [None] * 3  # No old ask.
+    processes.table[200] = START + 3600  # The pid now names a new process.
+    enroll(store, "successor", "claude", 200)
+    assert store.agent(other["agent"]["id"])["active"] == 1
+    # One Codex app server runs many threads.
+    codex = enroll(store, "codex", "codex", 300)
+    enroll(store, "codex-2", "codex", 300)
+    assert store.agent(codex["agent"]["id"])["active"] == 1
+
+
+def test_resuming_a_claude_conversation_replaces_the_one_in_its_process(store):
+    resumed = enroll(store, "resumed", "claude", 100)
+    enroll(store, "current", "claude", 200)
+    store.refresh_endpoint(resumed["session_handle"], {}, "", 200)  # /resume inside 200.
+    assert active(store) == {"resumed"}
 
 
 class Natives(Adapter):
