@@ -118,6 +118,13 @@ def test_a_new_claude_conversation_replaces_the_one_in_its_process(store, proces
     assert store.agent(codex["agent"]["id"])["active"] == 1
 
 
+def test_resuming_a_claude_conversation_replaces_the_one_in_its_process(store):
+    resumed = enroll(store, "resumed", "claude", 100)
+    enroll(store, "current", "claude", 200)
+    store.refresh_endpoint(resumed["session_handle"], {}, "", 200)  # /resume inside 200.
+    assert active(store) == {"resumed"}
+
+
 class Natives(Adapter):
     def __init__(self, pid):
         super().__init__()

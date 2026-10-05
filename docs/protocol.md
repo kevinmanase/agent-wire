@@ -105,10 +105,10 @@ with `os.kill(pid, 0)` and `ps -o lstart=`, with no model call or agent
 heartbeat. A missing process, or a reused PID whose start time differs by more
 than a minute (Linux start times shift when the clock steps), retires the
 enrollment exactly like `retire`, and its queued messages fail.
-Claude Code runs one conversation per process, and `/clear` starts a new session
-in it. So a Claude enrollment also retires any other active Claude enrollment
-from the same process. Codex does not, because one Codex app server runs many
-threads.
+Claude Code runs one conversation per process, and `/clear` or `/resume` switches
+the conversation in it. So when a Claude session enrolls or refreshes, any other
+active Claude enrollment from the same process is retired too. Codex is exempt,
+because one Codex app server runs many threads.
 Enrollments without a recorded process (CLI `register` for Codex, mailbox
 sessions, older enrollments) are unchanged until a hook refreshes them. If the
 start time can't be read, the session stays active.
