@@ -337,6 +337,54 @@ def test_report_fields_at_their_bounds(store):
     assert report["ask"]["text"] == "é" * 256
 
 
+async def test_ask_call_changes_only_the_ask(store, now):
+    a = enroll(store)
+    token = a["session_handle"]
+    broker = Broker(store)
+    full = {"ticket": "agent-wire#7", "lane": "api", "stage": "REVIEW", "role": "worker"}
+    before = store.session_update(token, task="Ship API", status="waiting", **full)["report"]
+    store.session_heartbeat(token, activity="working", new_turn=True)
+
+    def ask(value):
+        now[0] += 60
+        return broker.call("session_ask", {"session_handle": token, "ask": value})
+
+    raised = (await ask(ASK))["report"]
+    assert raised["ask"] == {**ASK, "raised_at": 1060}
+    # The rest of the report stays, including its age and the update marker.
+    assert {**raised, "ask": None} == {**before, "needs_update": True}
+    assert store.session(a["agent"]["id"])["last_seen"] == 1060
+    assert (await ask(ASK))["report"]["ask"]["raised_at"] == 1060
+    assert (await ask({**ASK, "kind": "approve"}))["report"]["ask"]["raised_at"] == 1180
+    cleared = (await ask(None))["report"]
+    assert cleared == {**before, "needs_update": True}
+    assert (await ask(None))["report"] == cleared
+    # A later report still replaces the whole report, ask included.
+    await ask(ASK)
+    assert store.session_update(token, task="Ship API", status="working")["report"]["ask"] is None
+    with pytest.raises(TypeError):
+        await broker.call("session_ask", {"session_handle": token})
+
+
+def test_ask_call_needs_a_report_and_a_live_enrollment(store):
+    a = enroll(store)
+    token = a["session_handle"]
+    store.session_heartbeat(token, activity="working")
+    with pytest.raises(WireError, match="report before") as error:
+        store.session_ask(token, ask=ASK)
+    assert error.value.code == "no_report"
+    # Clearing an ask that cannot exist is a no-op.
+    assert store.session_ask(token, ask=None)["report"] is None
+    report = store.session_update(token, task="Ship API", status="waiting")["report"]
+    for bad in ({**ASK, "kind": "merge"}, {**ASK, "to": ""}, {"to": "kevin"}, "Merge?"):
+        with pytest.raises(WireError, match="must be"):
+            store.session_ask(token, ask=bad)
+    assert store.session(a["agent"]["id"])["report"] == report
+    store.retire(token)
+    with pytest.raises(WireError, match="Invalid or retired"):
+        store.session_ask(token, ask=ASK)
+
+
 def names(page):
     return {session["name"] for session in page["sessions"]}
 

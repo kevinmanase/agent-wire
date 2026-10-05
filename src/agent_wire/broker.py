@@ -58,6 +58,7 @@ class Broker:
             return {"agents": self.store.agents()}
         methods = {
             "session_update": self.store.session_update,
+            "session_ask": self.store.session_ask,
             "session_heartbeat": self.store.session_heartbeat,
             "message_send": self.store.send,
             "messages_read": self.store.inbox,

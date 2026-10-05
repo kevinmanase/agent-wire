@@ -62,6 +62,31 @@ def bounded_text(value, field: str, limit: int) -> str:
     return value
 
 
+def check_ask(ask):
+    # An ask is the agent's claim that it needs a person; the broker never acts on it.
+    if ask is None:
+        return
+    if not isinstance(ask, dict) or set(ask) != set(ASK_FIELDS):
+        raise WireError("invalid_input", "ask must be null or an object of to, text, kind")
+    bounded_text(ask["to"], "ask.to", 64)
+    bounded_text(ask["text"], "ask.text", 512)
+    if ask["kind"] not in ASK_KINDS:
+        raise WireError("invalid_input", f"ask.kind must be one of {ASK_KINDS}")
+
+
+def raised_at(new: str) -> str:
+    """SQL for ask_raised_at, given the prefix that names the incoming ask values.
+
+    SET expressions read the previous row, so an unchanged ask keeps its raised_at.
+    """
+    return (
+        f"CASE WHEN {new}ask_kind IS NULL THEN NULL "
+        f"WHEN ask_raised_at IS NOT NULL AND ask_to IS {new}ask_to "
+        f"AND ask_text IS {new}ask_text AND ask_kind IS {new}ask_kind "
+        f"THEN ask_raised_at ELSE {new}ask_raised_at END"
+    )
+
+
 class Store:
     def __init__(self, path: Path, clock=time.time):
         self.clock = clock
@@ -224,14 +249,7 @@ class Store:
                 )
         if role is not None and role not in ROLES:
             raise WireError("invalid_input", f"role must be one of {ROLES} or null")
-        if ask is not None:
-            # An ask is the agent's claim that it needs a person; the broker never acts on it.
-            if not isinstance(ask, dict) or set(ask) != set(ASK_FIELDS):
-                raise WireError("invalid_input", "ask must be null or an object of to, text, kind")
-            bounded_text(ask["to"], "ask.to", 64)
-            bounded_text(ask["text"], "ask.text", 512)
-            if ask["kind"] not in ASK_KINDS:
-                raise WireError("invalid_input", f"ask.kind must be one of {ASK_KINDS}")
+        check_ask(ask)
         now = self.clock()
         row = {
             "task": task,
@@ -242,18 +260,35 @@ class Store:
             "reported_at": now,
             "last_seen": now,
         }
-        # SET expressions read the previous row, so an unchanged ask keeps its raised_at.
         self.db.execute(
             f"INSERT INTO session_reports (agent_id,{','.join(row)},ask_raised_at,needs_update) "
             f"VALUES (:agent_id,{','.join(':' + key for key in row)},:raised_at,0) "
             "ON CONFLICT(agent_id) DO UPDATE SET "
             + ",".join(f"{key}=excluded.{key}" for key in row)
-            + ",needs_update=0,ask_raised_at=CASE WHEN excluded.ask_kind IS NULL THEN NULL "
-            "WHEN ask_raised_at IS NOT NULL AND ask_to IS excluded.ask_to "
-            "AND ask_text IS excluded.ask_text AND ask_kind IS excluded.ask_kind "
-            "THEN ask_raised_at ELSE excluded.ask_raised_at END",
+            + ",needs_update=0,ask_raised_at="
+            + raised_at("excluded."),
             {**row, "agent_id": agent["id"], "raised_at": now if ask else None},
         )
+        return self.session(agent["id"])
+
+    def session_ask(self, token: str, *, ask: dict | None) -> dict:
+        """Set or clear (null) only the caller's ask; the rest of its report stays."""
+        agent = self.authenticate(token)
+        check_ask(ask)
+        now = self.clock()
+        changed = self.db.execute(
+            f"UPDATE session_reports SET ask_raised_at={raised_at(':')},"
+            "ask_to=:ask_to,ask_text=:ask_text,ask_kind=:ask_kind,last_seen=:now "
+            "WHERE agent_id=:agent_id AND reported_at IS NOT NULL",
+            {
+                **{f"ask_{key}": ask and ask[key] for key in ASK_FIELDS},
+                "ask_raised_at": now if ask else None,
+                "now": now,
+                "agent_id": agent["id"],
+            },
+        ).rowcount
+        if not changed and ask is not None:
+            raise WireError("no_report", "Publish a report before setting an ask")
         return self.session(agent["id"])
 
     def refresh_endpoint(self, token: str, endpoint: dict, cwd: str) -> dict:

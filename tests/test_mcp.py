@@ -88,6 +88,7 @@ async def test_bound_stdio_server_uses_its_own_identity():
                 "message_status",
                 "sessions_list",
                 "session_update",
+                "session_ask",
             }
             result = await client.call_tool("agents_list", {})
             assert result.structured_content["agents"][0]["name"] == "a"
@@ -130,6 +131,14 @@ async def test_bound_stdio_server_uses_its_own_identity():
                 assert result.is_error
             listing = await client.call_tool("sessions_list", {})
             assert listing.structured_content["sessions"][0]["report"] == report
+            result = await client.call_tool("session_ask", {"ask": None})
+            assert result.structured_content["report"] == {**report, "ask": None}
+            raised = {**ask, "text": "Merge now?"}
+            result = await client.call_tool("session_ask", {"ask": raised})
+            assert result.structured_content["report"]["ask"]["text"] == "Merge now?"
+            assert result.structured_content["report"]["stage"] == "REVIEW"
+            for bad in ({}, {"ask": {**ask, "kind": "merge"}}):
+                assert (await client.call_tool("session_ask", bad)).is_error
         store.close()
 
 
