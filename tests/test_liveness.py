@@ -111,7 +111,8 @@ def test_an_unreadable_process_keeps_the_recorded_one(store, processes):
 def test_an_exited_session_frees_its_name(store, processes):
     enroll(store, "worker", pid=200)
     del processes.table[200]
-    enroll(store, "worker", pid=100)
+    replacement = enroll(store, "worker", pid=100)
+    assert [a["id"] for a in store.agents()] == [replacement["agent"]["id"]]
 
 
 def test_a_new_claude_conversation_replaces_the_one_in_its_process(store, processes):
