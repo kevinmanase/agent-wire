@@ -7,6 +7,7 @@ from .adapters import NativeAdapters
 from .client import call
 from .errors import WireError
 from .paths import read_identity_record, write_identity
+from .processes import ancestor
 
 EVENTS = {
     "SessionStart",
@@ -93,7 +94,7 @@ async def run_hook(
         "new_turn": event == "UserPromptSubmit",
         "mode": MODE_CLASSES.get(payload.get("permission_mode")),
     }
-    target = None
+    target, pid = None, None
     if event in ("SessionStart", "UserPromptSubmit"):
         discovery = await NativeAdapters().discover(codex_socket)
         targets = [
@@ -104,6 +105,9 @@ async def run_hook(
         if len(targets) != 1:
             raise WireError("missing_session", "Could not discover exactly this hook's session")
         target = targets[0]
+        if runtime == "codex":
+            # Codex metadata names no process. The hook runs under the Codex process itself.
+            pid = ancestor("codex")
     token, session = None, None
     identity_file = None
     for path in (state / "identities").glob("*.json"):
@@ -126,6 +130,7 @@ async def run_hook(
                     session_handle=identity["session_handle"],
                     endpoint=target["endpoint"],
                     cwd=target["cwd"],
+                    pid=pid,
                 )
             session = await call(
                 state, "session_heartbeat", session_handle=identity["session_handle"], **heartbeat
@@ -148,6 +153,7 @@ async def run_hook(
             native_id=native_id,
             endpoint=target["endpoint"],
             cwd=target["cwd"],
+            pid=pid,
         )
         identity_file = write_identity(state, result)
         token = result["session_handle"]

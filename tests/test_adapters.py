@@ -124,6 +124,8 @@ async def test_claude_session_fence_and_native_peer_frame(sockets, version):
     server = await asyncio.start_unix_server(accept, path=path)
     async with server:
         adapter = NativeAdapters(home)
+        endpoint = await adapter.validate("claude", "native-claude", {"path": str(path)})
+        assert endpoint == {"path": str(path), "pid": os.getpid()}
         agent = {
             "runtime": "claude",
             "native_id": "native-claude",

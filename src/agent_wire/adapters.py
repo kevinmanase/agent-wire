@@ -130,6 +130,7 @@ class NativeAdapters:
         path = endpoint.get("path")
         if not isinstance(path, str):
             raise WireError("invalid_endpoint", "A Unix socket path is required")
+        process = {}
         if runtime == "codex":
             async with CodexRPC(path) as rpc:
                 loaded = (await rpc.request("thread/loaded/list", {}))["data"]
@@ -145,10 +146,11 @@ class NativeAdapters:
             ]
             if len(records) != 1:
                 raise Offline("Claude session and socket no longer match the live registry")
+            process = {"pid": int(records[0]["pid"])}
         else:
             raise WireError("invalid_runtime", "Unknown runtime")
         check_socket(path)
-        return {"path": path}
+        return {"path": path, **process}
 
     async def deliver(self, agent, envelope: dict, sender_mode: str | None = None):
         endpoint = json.loads(agent["endpoint"])
