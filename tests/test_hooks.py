@@ -151,7 +151,13 @@ async def test_new_runtime_versions_enroll_report_and_refresh(
     state, store = environment
     native_id = "native-thread"
     path = state / "native.sock"
-    turns = []
+    turns, sent = [], []
+
+    async def recording_call(state, method, **params):
+        sent.append(params)
+        return await call(state, method, **params)
+
+    monkeypatch.setattr("agent_wire.hooks.call", recording_call)
     if runtime == "codex":
         server = await unix_serve(lambda ws: codex_server(ws, turns, version=version), path)
     else:
@@ -192,3 +198,5 @@ async def test_new_runtime_versions_enroll_report_and_refresh(
         assert session["report"]["needs_update"]
         assert len(list((state / "identities").glob("*.json"))) == 1
     assert turns == []
+    # A broker from before pids were recorded rejects a pid key, even a null one.
+    assert all(params.get("pid", 0) is not None for params in sent)

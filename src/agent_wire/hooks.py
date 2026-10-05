@@ -94,7 +94,7 @@ async def run_hook(
         "new_turn": event == "UserPromptSubmit",
         "mode": MODE_CLASSES.get(payload.get("permission_mode")),
     }
-    target, pid = None, None
+    target, process = None, {}
     if event in ("SessionStart", "UserPromptSubmit"):
         discovery = await NativeAdapters().discover(codex_socket)
         targets = [
@@ -107,7 +107,9 @@ async def run_hook(
         target = targets[0]
         if runtime == "codex":
             # Codex metadata names no process. The hook runs under the Codex process itself.
-            pid = ancestor("codex")
+            # Sent only when known: a broker from before 0.4.0 rejects a pid key, even null.
+            if pid := ancestor("codex"):
+                process = {"pid": pid}
     token, session = None, None
     identity_file = None
     for path in (state / "identities").glob("*.json"):
@@ -130,7 +132,7 @@ async def run_hook(
                     session_handle=identity["session_handle"],
                     endpoint=target["endpoint"],
                     cwd=target["cwd"],
-                    pid=pid,
+                    **process,
                 )
             session = await call(
                 state, "session_heartbeat", session_handle=identity["session_handle"], **heartbeat
@@ -153,7 +155,7 @@ async def run_hook(
             native_id=native_id,
             endpoint=target["endpoint"],
             cwd=target["cwd"],
-            pid=pid,
+            **process,
         )
         identity_file = write_identity(state, result)
         token = result["session_handle"]

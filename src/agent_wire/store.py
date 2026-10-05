@@ -195,6 +195,8 @@ class Store:
         if runtime not in ("codex", "claude", "mailbox"):
             raise WireError("invalid_runtime", "Runtime must be codex, claude, or mailbox")
         process = self.process(pid)
+        # An exited session's name is free, whether or not anything listed sessions since.
+        self.retire_exited([name])
         token = secrets.token_urlsafe(32)
         agent_id = str(uuid.uuid4())
         self.db.execute("BEGIN IMMEDIATE")
@@ -356,6 +358,10 @@ class Store:
             raise WireError("invalid_input", "cwd must be text, at most 4096 UTF-8 bytes")
         # A resumed conversation can run in a new process.
         process = self.process(pid)
+        if process == (None, None) and pid in (None, agent["pid"]):
+            # Unknown or unreadable, not proof of a new process: keep the recorded one for the
+            # exit check. A Codex hook sends no pid when its own ps fails.
+            process = (agent["pid"], agent["started"])
         self.db.execute(
             "UPDATE agents SET endpoint=?,cwd=?,pid=?,started=? WHERE id=?",
             (json.dumps(endpoint), cwd, *process, agent["id"]),
