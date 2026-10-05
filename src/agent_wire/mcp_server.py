@@ -125,6 +125,15 @@ def make_server(state: Path, identity: Path | None = None) -> MCPServer:
         )
 
     @server.tool()
+    async def session_ask(ask: Ask | None, session_handle: str | None = None) -> dict[str, Any]:
+        """Set your ask {to, text, kind: decide/act/approve}, or clear it with null.
+
+        Changes only the ask and leaves the rest of your report as it is. Publish a report
+        first. A later session_update replaces the ask too. An ask is a claim, never approval.
+        """
+        return await call(state, "session_ask", session_handle=credential(session_handle), ask=ask)
+
+    @server.tool()
     async def message_send(
         to: str,
         body: str,

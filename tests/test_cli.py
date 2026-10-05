@@ -131,6 +131,13 @@ async def test_cli_roundtrip_restart_permissions_and_single_owner():
             assert sessions["sessions"][0]["name"] == "alice"
             report = sessions["sessions"][0]["report"]
             assert report["ask"]["text"] == "Review the API change"
+            ask = ("--to", "lead", "--text", "Merge now?", "--kind", "approve")
+            raised = (await cli(state, "ask", "--identity", alice, *ask))["report"]
+            assert raised["ask"]["to"] == "lead"
+            assert raised["stage"] == "REVIEW"
+            cleared = (await cli(state, "ask", "--identity", alice, "--clear"))["report"]
+            assert cleared == {**raised, "ask": None}
+            report = (await cli(state, "ask", "--identity", alice, *ask))["report"]
             message = await cli(
                 state,
                 "send",
@@ -258,3 +265,31 @@ async def test_sessions_all_flag_requests_finished_sessions(monkeypatch, tmp_pat
     args = cli_module.parser().parse_args(["--state", str(tmp_path), "sessions", *flags])
     await cli_module.run(args)
     assert requests[0]["include_finished"] is expected
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        (("--to", "kevin"), {"to": "kevin", "text": None, "kind": None}),
+        (("--clear", "--to", "kevin"), "invalid_input"),
+        ((), "invalid_input"),
+    ],
+)
+async def test_ask_sets_or_clears_only_the_ask(monkeypatch, tmp_path, flags, expected):
+    requests = []
+
+    async def fake_call(state, method, **params):
+        requests.append((method, params))
+
+    monkeypatch.setattr(cli_module, "call", fake_call)
+    monkeypatch.setattr(cli_module, "read_identity", lambda path: "token")
+    args = cli_module.parser().parse_args(
+        ["--state", str(tmp_path), "ask", "--identity", "own.json", *flags]
+    )
+    if expected == "invalid_input":
+        with pytest.raises(WireError, match="--clear alone"):
+            await cli_module.run(args)
+        assert requests == []
+    else:
+        await cli_module.run(args)
+        assert requests == [("session_ask", {"session_handle": "token", "ask": expected})]

@@ -48,7 +48,7 @@ def parser() -> argparse.ArgumentParser:
     sessions.add_argument("--after", default="")
     sessions.add_argument("--limit", type=int, default=50)
     sessions.add_argument("--table", action="store_true", help="Show a readable terminal table")
-    for name in ("agents", "inbox", "send", "ack", "status", "retire", "report"):
+    for name in ("agents", "inbox", "send", "ack", "status", "retire", "report", "ask"):
         sub = commands.add_parser(name)
         sub.add_argument(
             "--identity", type=Path, required=True, help="Private enrollment identity file"
@@ -62,6 +62,11 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--ask-to", help="Who the ask is for")
             sub.add_argument("--ask-text", help="What the session needs from that person")
             sub.add_argument("--ask-kind", choices=ASK_KINDS)
+        if name == "ask":
+            sub.add_argument("--to", help="Who the ask is for")
+            sub.add_argument("--text", help="What the session needs from that person")
+            sub.add_argument("--kind", choices=ASK_KINDS)
+            sub.add_argument("--clear", action="store_true", help="Clear the open ask")
         if name == "inbox":
             sub.add_argument("--after", type=int, default=0)
             sub.add_argument("--limit", type=int, default=50)
@@ -142,6 +147,13 @@ async def run(args):
         }
         fields = {key: getattr(args, key) for key in ("task", "status", "role", *REPORT_TEXT)}
         return await call(state, "session_update", session_handle=token, ask=ask or None, **fields)
+    if args.command == "ask":
+        ask = {key: getattr(args, key) for key in ASK_FIELDS}
+        if args.clear == any(ask.values()):
+            raise WireError("invalid_input", "Give --to, --text, and --kind, or --clear alone")
+        return await call(
+            state, "session_ask", session_handle=token, ask=None if args.clear else ask
+        )
     if args.command == "agents":
         return await call(state, "agents_list", session_handle=token)
     if args.command == "inbox":

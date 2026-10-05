@@ -49,6 +49,15 @@ An ask is the agent's claim that it needs a person. It is never approval, and
 the broker never acts on it. Clients that send none of these fields keep
 working unchanged.
 
+`session_ask` changes only the caller's ask, so any client can raise or clear
+it without resending the report. Its one parameter, `ask`, is required: an ask
+object as above sets it, and null clears it. It follows the same `raised_at`
+rule as `session_update` and records contact in `last_seen`. It leaves every
+other field, `reported_at`, and `needs_update` as they were. Setting an ask
+before the caller has published a report fails with `no_report`; clearing one
+then changes nothing. A later `session_update` still replaces the whole report,
+ask included.
+
 `sessions_list` returns active enrollment metadata plus `report` (null until
 published), `activity`, `last_seen`, `age_seconds`, and `freshness`
 (`unseen`, `fresh`, `stale`). No endpoint, credential, prompt, or transcript is

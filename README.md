@@ -162,6 +162,7 @@ agent-wire mcp --identity /absolute/path/to/this-session-identity.json
 | `agents_list` | Find explicitly enrolled recipients |
 | `sessions_list` | Read the shared task/status list, including freshness |
 | `session_update` | Replace your own task/status report |
+| `session_ask` | Set or clear only your ask, keeping the rest of your report |
 | `message_send` | Send text; set `in_reply_to` for a reply |
 | `messages_read` | Read pending messages, optionally after a cursor |
 | `message_ack` | Acknowledge a received message |
@@ -192,6 +193,9 @@ agent-wire report --identity /path/to/own-identity.json \
 agent-wire report --identity /path/to/own-identity.json \
   --task 'Ship the API change' --status waiting --lane api --stage REVIEW \
   --role worker --ask-to kevin --ask-kind approve --ask-text 'Approve the merge?'
+agent-wire ask --identity /path/to/own-identity.json \
+  --to kevin --kind decide --text 'Merge api before mobile?'
+agent-wire ask --identity /path/to/own-identity.json --clear
 ```
 
 Reports include a task, `working`/`waiting`/`blocked`/`idle`/`done` status,
@@ -199,10 +203,18 @@ optional detail/repository/branch/ticket, and timestamps. They can also name a
 `lane`, a `stage`, a `role` (`main`, `lead`, or `worker`), and an `ask`: what
 the session needs from a person, with `to`, `text`, and `kind` (`decide`,
 `act`, or `approve`). The broker records when an ask was first raised and keeps
-that time while the same ask stays. An ask is a claim, never approval. The
-table shows lane, stage, and a short ask column when any entry has them.
-Hooks report activity
-and remind the agent to publish; they never infer task summaries or completion.
+that time while the same ask stays. An ask is a claim, never approval.
+`agent-wire ask` and `session_ask` change only the ask; `report` still replaces
+the whole report, ask included. The table shows lane, stage, and a short ask
+column when any entry has them.
+
+Write `ticket` so a floor can group every report on the same work: the Linear
+issue key, such as `ENG-2649`, or `<repo>#<number>` for the GitHub issue, such
+as `team-floor#11`, or for the pull request when there is no issue, such as
+`team-floor#14`. Put nothing else in the field: no title and no `PR` prefix.
+
+Hooks report activity and remind the agent to publish; they never infer task
+summaries or completion.
 After a new prompt, the previous report is marked as needing an update.
 After five minutes without a report or hook heartbeat, the entry is **stale**.
 Stale does not mean offline or finished, and idle does not mean done.
