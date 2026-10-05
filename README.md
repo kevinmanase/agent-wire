@@ -35,6 +35,7 @@ https://github.com/kevinmanase/agent-wire/blob/main/docs/setup.md for detail.
 1. Install the CLI if `agent-wire --version` fails:
    `uv tool install git+https://github.com/kevinmanase/agent-wire.git`
    (or pip into a venv). Use its absolute path in every config below.
+   After upgrading, restart the broker so it runs the same version as the hooks.
 2. Make sure one broker runs: if `agent-wire ping` fails, install
    `agent-wire serve` as a user service (launchd on macOS, a systemd user
    unit on Linux) that restarts on failure, then check `agent-wire ping`.
