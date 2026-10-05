@@ -98,6 +98,29 @@ def test_a_resumed_conversation_records_its_new_process(store, processes):
     assert active(store) == set()
 
 
+def test_a_new_claude_conversation_replaces_the_one_in_its_process(store, processes):
+    old, other = enroll(store, "worker", "claude", 100), enroll(store, "other", "claude", 200)
+    # A Codex app server runs many threads in one process; a mailbox has no process.
+    codex, mailbox = enroll(store, "codex", "codex", 100), enroll(store, "mailbox")
+    ask = {"to": "kevin", "text": "Merge?", "kind": "decide"}
+    store.session_update(old["session_handle"], task="Ship", status="waiting", ask=ask)
+    queued = send(store, other, old)
+    processes.table[100] = START + 30  # A clock step moves the same process's start.
+    # After /clear, the same process enrolls its new session, under the same hook --name.
+    new = enroll(store, "worker", "claude", 100)
+    sessions = store.sessions(include_finished=True)["sessions"]
+    survivors = {s["id"] for s in sessions}
+    assert survivors == {e["agent"]["id"] for e in (new, other, codex, mailbox)}
+    assert [s["report"] for s in sessions] == [None] * 4  # The old ask went with its session.
+    store.expire()
+    assert store.status(other["session_handle"], queued["id"])["status"] == "failed"
+    with pytest.raises(WireError, match="retired"):
+        store.session_update(old["session_handle"], task="Still here", status="working")
+    processes.table[200] = START + 3600  # The pid now names a new process.
+    enroll(store, "successor", "claude", 200)
+    assert store.agent(other["agent"]["id"])["active"] == 1
+
+
 class Natives(Adapter):
     def __init__(self, pid):
         super().__init__()
