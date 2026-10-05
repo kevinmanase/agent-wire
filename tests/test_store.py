@@ -15,8 +15,8 @@ def store(tmp_path):
     db.close()
 
 
-def enroll(store, name="a", runtime="mailbox"):
-    return store.register(name, runtime, str(uuid.uuid4()), {}, "")
+def enroll(store, name="a", runtime="mailbox", pid=None):
+    return store.register(name, runtime, str(uuid.uuid4()), {}, "", pid)
 
 
 def send(store, sender, recipient, body="hello", **kwargs):

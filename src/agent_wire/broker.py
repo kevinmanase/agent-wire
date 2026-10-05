@@ -84,7 +84,6 @@ class Broker:
                     await attempt(row)
 
             async def attempt(row):
-                self.store.retire_exited(row["recipient"])
                 self.store.expire()
                 agent = self.store.agent(row["recipient"])
                 if not agent["active"]:
@@ -123,8 +122,11 @@ class Broker:
                 if self.store.message(row["id"])["status"] != "queued":
                     self.wake.set()
 
+            rows = self.store.next_delivery()
+            # One process check per pass; attempt() fails messages to retired recipients.
+            self.store.retire_exited([row["recipient"] for row in rows])
             async with asyncio.TaskGroup() as group:
-                for row in self.store.next_delivery():
+                for row in rows:
                     group.create_task(deliver_one(row))
 
     async def worker(self):

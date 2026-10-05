@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import os
 import subprocess
-import uuid
 from pathlib import Path
 
 import pytest
@@ -9,7 +8,7 @@ import pytest
 from agent_wire.broker import Broker
 from agent_wire.errors import WireError
 from agent_wire.hooks import run_hook
-from agent_wire.processes import ancestor, process_starts
+from agent_wire.processes import ancestor, process_starts, ps
 from agent_wire.store import Store
 
 from .test_broker import Adapter
@@ -21,8 +20,8 @@ START = "Mon Oct 5 09:00:00 2026"
 class Processes:
     """A fake process table: pid -> start time, or None when ps can't read it."""
 
-    def __init__(self, **table):
-        self.table = {int(pid.lstrip("p")): start for pid, start in table.items()}
+    def __init__(self, table):
+        self.table = table
         self.calls = []
 
     def __call__(self, pids):
@@ -32,7 +31,7 @@ class Processes:
 
 @pytest.fixture
 def processes():
-    return Processes(p100=START, p200=START, p300=START, p400=START)
+    return Processes(dict.fromkeys((100, 200, 300, 400), START))
 
 
 @pytest.fixture
@@ -42,17 +41,17 @@ def store(tmp_path, processes):
     db.close()
 
 
-def run(store, name, pid, runtime="claude"):
-    return store.register(name, runtime, str(uuid.uuid4()), {}, "", pid=pid)
-
-
 def active(store):
     return {agent["name"] for agent in store.agents()}
 
 
 def test_exited_sessions_retire_and_their_messages_fail(store, processes):
-    live, dead, reused = run(store, "live", 100), run(store, "dead", 200), run(store, "reused", 300)
-    unreadable, mailbox = run(store, "unreadable", 400), enroll(store, "mailbox")
+    live, dead, reused = (
+        enroll(store, "live", pid=100),
+        enroll(store, "dead", pid=200),
+        enroll(store, "reused", pid=300),
+    )
+    unreadable, mailbox = enroll(store, "unreadable", pid=400), enroll(store, "mailbox")
     assert store.agent(live["agent"]["id"])["started"] == START
     queued = send(store, live, dead)
     del processes.table[200]
@@ -71,7 +70,7 @@ def test_exited_sessions_retire_and_their_messages_fail(store, processes):
 
 
 def test_routing_checks_only_the_recipient(store, processes):
-    a, b, c = run(store, "a", 100), run(store, "b", 200), run(store, "c", 300)
+    a, b, c = enroll(store, "a", pid=100), enroll(store, "b", pid=200), enroll(store, "c", pid=300)
     processes.calls.clear()
     send(store, a, b)
     assert processes.calls == [[200]]
@@ -82,15 +81,15 @@ def test_routing_checks_only_the_recipient(store, processes):
 
 
 def test_a_dead_or_missing_process_is_not_recorded(store):
-    assert store.agent(run(store, "gone", 999)["agent"]["id"])["pid"] is None
-    assert store.agent(run(store, "unknown", None)["agent"]["id"])["pid"] is None
+    assert store.agent(enroll(store, "gone", pid=999)["agent"]["id"])["pid"] is None
+    assert store.agent(enroll(store, "unknown", pid=None)["agent"]["id"])["pid"] is None
     with pytest.raises(WireError, match="pid"):
-        run(store, "bad", -1)
+        enroll(store, "bad", pid=-1)
     assert active(store) == {"gone", "unknown"}
 
 
 def test_a_resumed_conversation_records_its_new_process(store, processes):
-    a = run(store, "a", 100)
+    a = enroll(store, "a", pid=100)
     store.refresh_endpoint(a["session_handle"], {}, "/repo", 200)
     del processes.table[100]
     assert active(store) == {"a"}
@@ -123,7 +122,7 @@ async def test_broker_takes_claude_pids_from_native_records(store):
 
 
 async def test_delivery_to_an_exited_session_fails_without_writing(store, processes):
-    a, b = enroll(store), run(store, "b", 200, "codex")
+    a, b = enroll(store), enroll(store, "b", "codex", 200)
     message = send(store, a, b)
     del processes.table[200]
     adapter = Adapter()
@@ -157,7 +156,5 @@ def test_real_process_table():
     child = subprocess.Popen(["true"])
     child.wait()
     assert process_starts([child.pid]) == {}
-    parent = subprocess.run(
-        ["ps", "-o", "comm=", "-p", str(os.getppid())], capture_output=True, text=True
-    ).stdout
+    parent = ps("-o", "comm=", "-p", str(os.getppid()))
     assert ancestor(Path(parent.strip()).name) == os.getppid()

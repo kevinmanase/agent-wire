@@ -229,19 +229,17 @@ class Store:
             raise WireError("unauthorized", "Invalid or retired session credential")
         return row
 
-    def retire_exited(self, target: str | None = None):
+    def retire_exited(self, targets: list[str] | None = None):
         """Retire active sessions whose process has exited, exactly as retire does.
 
-        A session without a recorded process, or whose start time can't be read, stays.
+        Checks every session, or only those named by id or name in targets. A session
+        without a recorded process, or whose start time can't be read, stays.
         """
         query = "SELECT id,pid,started FROM agents WHERE active=1 AND pid IS NOT NULL"
-        params = ()
-        if target is not None:
-            query += " AND (id=? OR name=?)"
-            params = (target, target)
-        rows = self.db.execute(query, params).fetchall()
-        if not rows:
-            return
+        if targets is not None:
+            marks = ",".join("?" * len(targets))
+            query += f" AND (id IN ({marks}) OR name IN ({marks}))"
+        rows = self.db.execute(query, [*(targets or ()), *(targets or ())]).fetchall()
         starts = self.processes([row["pid"] for row in rows])
         self.db.executemany(
             "UPDATE agents SET active=0 WHERE id=?",
@@ -477,7 +475,7 @@ class Store:
         }
 
     def resolve(self, target: str):
-        self.retire_exited(target)
+        self.retire_exited([target])
         rows = self.db.execute(
             "SELECT * FROM agents WHERE active=1 AND (id=? OR name=?)", (target, target)
         ).fetchall()
