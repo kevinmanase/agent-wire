@@ -45,6 +45,8 @@ STALE_AFTER = 300
 # Linux derives a process's start time from a wall-clock boot time, which jitters and moves
 # when the clock steps. A start this far from the recorded one means a reused pid.
 START_SLACK = 60
+# Other active enrollments of a runtime in a process: (runtime, id, pid, started, slack).
+SAME_PROCESS = "active=1 AND runtime=? AND id!=? AND pid=? AND abs(started-?)<=?"
 FOLD_AFTER = 6 * 3600
 # A finished entry: done, no contact for FOLD_AFTER, no open ask, and no message in flight.
 FINISHED = (
@@ -171,24 +173,26 @@ class Store:
         started = pid and self.processes([pid]).get(pid)
         return (pid, started) if started else (None, None)
 
-    def replaces(self, runtime: str, process: tuple) -> bool:
-        """Whether a session enrolling in this process ends the process's previous one.
+    def replaces(self, agent_id: str, runtime: str, process: tuple) -> bool:
+        """Whether this session ends an earlier one in its process, after /clear or /resume.
 
-        Claude Code runs one conversation per process, and terminal Codex (--no-daemon) one
-        thread, so after /clear or /resume the previous one has ended. A Codex app server,
-        the daemon or the desktop app's, runs many threads. Without a recorded process,
-        nothing is replaced.
+        Claude Code runs one conversation per process and terminal Codex one thread; a Codex
+        app server runs many. Reads ps only when an earlier one exists.
         """
-        pid = process[0]
-        return pid is not None and (
-            runtime == "claude" or (runtime == "codex" and not self.app_server(pid))
-        )
+        if (
+            runtime not in ("claude", "codex")
+            or not self.db.execute(
+                f"SELECT 1 FROM agents WHERE {SAME_PROCESS}",
+                (runtime, agent_id, *process, START_SLACK),
+            ).fetchone()
+        ):
+            return False
+        return runtime == "claude" or not self.app_server(process[0])
 
     def retire_replaced(self, agent_id: str, runtime: str, process: tuple):
         """Retire other enrollments of this runtime in this one's process, as retire does."""
         self.db.execute(
-            "UPDATE agents SET active=0 WHERE active=1 AND runtime=? AND id!=? AND pid=? "
-            "AND abs(started-?)<=?",
+            f"UPDATE agents SET active=0 WHERE {SAME_PROCESS}",
             (runtime, agent_id, *process, START_SLACK),
         )
 
@@ -205,11 +209,11 @@ class Store:
         if runtime not in ("codex", "claude", "mailbox"):
             raise WireError("invalid_runtime", "Runtime must be codex, claude, or mailbox")
         process = self.process(pid)
-        replaces = self.replaces(runtime, process)  # Reads ps, so before the write lock.
         # An exited session's name is free, whether or not anything listed sessions since.
         self.retire_exited([name])
         token = secrets.token_urlsafe(32)
         agent_id = str(uuid.uuid4())
+        replaces = self.replaces(agent_id, runtime, process)  # Can read ps: before the lock.
         self.db.execute("BEGIN IMMEDIATE")
         try:
             # Retire before the name check, so a replacement can take its predecessor's name.
@@ -378,7 +382,7 @@ class Store:
             "UPDATE agents SET endpoint=?,cwd=?,pid=?,started=? WHERE id=?",
             (json.dumps(endpoint), cwd, *process, agent["id"]),
         )
-        if self.replaces(agent["runtime"], process):
+        if self.replaces(agent["id"], agent["runtime"], process):
             self.retire_replaced(agent["id"], agent["runtime"], process)
         return self.public_agent(self.agent(agent["id"]))
 
