@@ -99,6 +99,21 @@ def test_a_resumed_conversation_records_its_new_process(store, processes):
     assert active(store) == set()
 
 
+def test_an_unreadable_process_keeps_the_recorded_one(store, processes):
+    a = enroll(store, "a", pid=100)
+    processes.table[100] = None  # ps timed out.
+    store.refresh_endpoint(a["session_handle"], {}, "/repo", 100)
+    assert store.agent(a["agent"]["id"])["pid"] == 100
+    del processes.table[100]
+    assert active(store) == set()
+
+
+def test_an_exited_session_frees_its_name(store, processes):
+    enroll(store, "worker", pid=200)
+    del processes.table[200]
+    enroll(store, "worker", pid=100)
+
+
 def test_a_new_claude_conversation_replaces_the_one_in_its_process(store, processes):
     old, other = enroll(store, "worker", "claude", 100), enroll(store, "other", "claude", 200)
     enroll(store, "unrecorded", "claude")
