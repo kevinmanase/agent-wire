@@ -230,6 +230,7 @@ with `--after` to page through the full list.
 | `path_too_long` | Choose a shorter private state path for the Unix socket |
 
 Stop the broker with Ctrl-C or SIGTERM. Restarting preserves identities and
-messages. `agent-wire retire --identity /path/to/identity.json` removes one
+messages. After upgrading, restart the broker: hooks run the new code at once,
+and an older broker can reject their calls. `agent-wire retire --identity /path/to/identity.json` removes one
 enrollment from the active address book; it does not clear or stop its native
 conversation. Agent Wire has no conversation-clearing command.
