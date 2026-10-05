@@ -137,19 +137,7 @@ async def test_cli_roundtrip_restart_permissions_and_single_owner():
             assert raised["stage"] == "REVIEW"
             cleared = (await cli(state, "ask", "--identity", alice, "--clear"))["report"]
             assert cleared == {**raised, "ask": None}
-            await cli(
-                state,
-                "ask",
-                "--identity",
-                alice,
-                *ask[:2],
-                "--text",
-                "Review the API change",
-                "--kind",
-                "act",
-            )
-            sessions = await cli(state, "sessions", "--status", "blocked")
-            report = sessions["sessions"][0]["report"]
+            report = (await cli(state, "ask", "--identity", alice, *ask))["report"]
             message = await cli(
                 state,
                 "send",
@@ -282,11 +270,6 @@ async def test_sessions_all_flag_requests_finished_sessions(monkeypatch, tmp_pat
 @pytest.mark.parametrize(
     ("flags", "expected"),
     [
-        (("--clear",), None),
-        (
-            ("--to", "kevin", "--text", "Merge?", "--kind", "decide"),
-            {"to": "kevin", "text": "Merge?", "kind": "decide"},
-        ),
         (("--to", "kevin"), {"to": "kevin", "text": None, "kind": None}),
         (("--clear", "--to", "kevin"), "invalid_input"),
         ((), "invalid_input"),

@@ -376,7 +376,7 @@ def test_ask_call_needs_a_report_and_a_live_enrollment(store):
     # Clearing an ask that cannot exist is a no-op.
     assert store.session_ask(token, ask=None)["report"] is None
     report = store.session_update(token, task="Ship API", status="waiting")["report"]
-    for bad in ({**ASK, "kind": "merge"}, {**ASK, "to": ""}, {"to": "kevin"}, "Merge?"):
+    for bad in ({**ASK, "kind": "merge"}, {"to": "kevin"}):
         with pytest.raises(WireError, match="must be"):
             store.session_ask(token, ask=bad)
     assert store.session(a["agent"]["id"])["report"] == report

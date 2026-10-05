@@ -204,10 +204,9 @@ optional detail/repository/branch/ticket, and timestamps. They can also name a
 the session needs from a person, with `to`, `text`, and `kind` (`decide`,
 `act`, or `approve`). The broker records when an ask was first raised and keeps
 that time while the same ask stays. An ask is a claim, never approval.
-`agent-wire ask` and the `session_ask` tool set or clear only the ask, so a tab
-label, a script, or the agent itself can raise one without resending the
-report; `report` still replaces everything, ask included. The table shows lane,
-stage, and a short ask column when any entry has them.
+`agent-wire ask` and `session_ask` change only the ask; `report` still replaces
+the whole report, ask included. The table shows lane, stage, and a short ask
+column when any entry has them.
 
 Write `ticket` so a floor can group every report on the same work: the Linear
 issue key, such as `ENG-2649`, or `<repo>#<number>` for the GitHub issue, such

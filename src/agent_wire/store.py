@@ -74,8 +74,16 @@ def check_ask(ask):
         raise WireError("invalid_input", f"ask.kind must be one of {ASK_KINDS}")
 
 
+def ask_columns(ask: dict | None, now: float) -> dict:
+    """The ask's column values, under the names raised_at() reads."""
+    return {
+        **{f"ask_{key}": ask and ask[key] for key in ASK_FIELDS},
+        "ask_raised_at": now if ask else None,
+    }
+
+
 def raised_at(new: str) -> str:
-    """SQL for ask_raised_at, given the prefix that names the incoming ask values.
+    """SQL for ask_raised_at, given the prefix that names the ask_columns() values.
 
     SET expressions read the previous row, so an unchanged ask keeps its raised_at.
     """
@@ -256,18 +264,18 @@ class Store:
             "status": status,
             **text,
             "role": role,
-            **{f"ask_{key}": ask and ask[key] for key in ASK_FIELDS},
+            **ask_columns(ask, now),
             "reported_at": now,
             "last_seen": now,
         }
         self.db.execute(
-            f"INSERT INTO session_reports (agent_id,{','.join(row)},ask_raised_at,needs_update) "
-            f"VALUES (:agent_id,{','.join(':' + key for key in row)},:raised_at,0) "
+            f"INSERT INTO session_reports (agent_id,{','.join(row)},needs_update) "
+            f"VALUES (:agent_id,{','.join(':' + key for key in row)},0) "
             "ON CONFLICT(agent_id) DO UPDATE SET "
-            + ",".join(f"{key}=excluded.{key}" for key in row)
+            + ",".join(f"{key}=excluded.{key}" for key in row if key != "ask_raised_at")
             + ",needs_update=0,ask_raised_at="
             + raised_at("excluded."),
-            {**row, "agent_id": agent["id"], "raised_at": now if ask else None},
+            {**row, "agent_id": agent["id"]},
         )
         return self.session(agent["id"])
 
@@ -280,12 +288,7 @@ class Store:
             f"UPDATE session_reports SET ask_raised_at={raised_at(':')},"
             "ask_to=:ask_to,ask_text=:ask_text,ask_kind=:ask_kind,last_seen=:now "
             "WHERE agent_id=:agent_id AND reported_at IS NOT NULL",
-            {
-                **{f"ask_{key}": ask and ask[key] for key in ASK_FIELDS},
-                "ask_raised_at": now if ask else None,
-                "now": now,
-                "agent_id": agent["id"],
-            },
+            {**ask_columns(ask, now), "now": now, "agent_id": agent["id"]},
         ).rowcount
         if not changed and ask is not None:
             raise WireError("no_report", "Publish a report before setting an ask")
