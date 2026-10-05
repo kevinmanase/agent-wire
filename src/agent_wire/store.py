@@ -187,16 +187,15 @@ class Store:
         try:
             # A new enrollment replaces the old one for its native session. Claude Code runs
             # one conversation per process, so after /clear it also replaces that process's
-            # last one. A Codex app server runs many threads in one process.
+            # last one. Codex is exempt: one app server runs many threads.
             self.db.execute(
                 "UPDATE agents SET active=0 WHERE active=1 AND runtime=? AND (native_id=? OR "
                 "(runtime='claude' AND pid=? AND abs(started-?)<=?))",
                 (runtime, native_id, *process, START_SLACK),
             )
-            clash = self.db.execute(
-                "SELECT * FROM agents WHERE name=? AND active=1", (name,)
-            ).fetchone()
-            if clash:
+            if self.db.execute(
+                "SELECT 1 FROM agents WHERE name=? AND active=1", (name,)
+            ).fetchone():
                 raise WireError("name_in_use", "An active session already owns that name")
             self.db.execute(
                 "INSERT INTO agents (id,name,runtime,native_id,endpoint,cwd,credential,active,"
