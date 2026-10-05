@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-wire"
-version = "0.3.2"
+dynamic = ["version"]
 description = "Local messaging and a shared work registry for Codex and Claude Code sessions"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -39,6 +39,9 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.hatch.version]
+path = "src/agent_wire/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_wire"]
