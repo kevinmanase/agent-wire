@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,7 @@ import pytest
 from agent_wire.broker import Broker
 from agent_wire.errors import WireError
 from agent_wire.hooks import run_hook
-from agent_wire.processes import ancestor, process_starts, ps
+from agent_wire.processes import ancestor, is_app_server, process_starts, ps
 from agent_wire.store import Store
 
 from .test_broker import Adapter
@@ -23,6 +24,7 @@ class Processes:
 
     def __init__(self, table):
         self.table = table
+        self.app_servers = set()
         self.calls = []
 
     def __call__(self, pids):
@@ -37,7 +39,7 @@ def processes():
 
 @pytest.fixture
 def store(tmp_path, processes):
-    db = Store(tmp_path / "db", processes=processes)
+    db = Store(tmp_path / "db", processes=processes, app_server=processes.app_servers.__contains__)
     yield db
     db.close()
 
@@ -129,7 +131,17 @@ def test_a_new_claude_conversation_replaces_the_one_in_its_process(store, proces
     processes.table[200] = START + 3600  # The pid now names a new process.
     enroll(store, "successor", "claude", 200)
     assert store.agent(other["agent"]["id"])["active"] == 1
-    # One Codex app server runs many threads.
+
+
+def test_a_new_terminal_codex_thread_replaces_the_one_in_its_process(store, processes):
+    old = enroll(store, "worker", "codex", 100)
+    store.session_update(old["session_handle"], task="Ship", status="waiting", ask=ASK)
+    # After /clear, terminal Codex (--no-daemon) enrolls its new thread from the same process.
+    enroll(store, "worker", "codex", 100)
+    assert store.agent(old["agent"]["id"])["active"] == 0
+    assert [s["report"] for s in store.sessions()["sessions"]] == [None]  # No old ask.
+    # One Codex app server, the daemon or the desktop app's, runs many threads.
+    processes.app_servers.add(300)
     codex = enroll(store, "codex", "codex", 300)
     enroll(store, "codex-2", "codex", 300)
     assert store.agent(codex["agent"]["id"])["active"] == 1
@@ -203,3 +215,9 @@ def test_real_process_table():
     assert process_starts([child.pid]) == {}
     parent = ps("-o", "comm=", "-p", str(os.getppid()))
     assert ancestor(Path(parent.strip()).name) == os.getppid()
+    server = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "app-server"])
+    try:
+        assert is_app_server(server.pid) and not is_app_server(os.getpid())
+    finally:
+        server.kill()
+        server.wait()

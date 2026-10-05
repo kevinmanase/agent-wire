@@ -68,8 +68,9 @@ inbox explicitly. Do not bypass it with terminal pasting.
 
 Enroll native sessions using the README's `register` commands. A new
 enrollment revokes the old credential for that native session. After a clear,
-verify the replacement session ID and enroll it separately. In Claude Code,
-enrolling it retires the cleared conversation's enrollment. Old messages are
+verify the replacement session ID and enroll it separately. In Claude Code and
+terminal Codex (`--no-daemon`), enrolling it retires the cleared conversation's
+enrollment. Old messages are
 never redirected to the replacement conversation.
 
 ## Bind an MCP server to one conversation

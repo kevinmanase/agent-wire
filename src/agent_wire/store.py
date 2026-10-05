@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal, get_args
 
 from .errors import WireError
-from .processes import process_starts
+from .processes import is_app_server, process_starts
 
 MAX_BODY = 65_536
 MAX_PENDING = 64
@@ -100,9 +100,12 @@ def raised_at(new: str) -> str:
 
 
 class Store:
-    def __init__(self, path: Path, clock=time.time, processes=process_starts):
+    def __init__(
+        self, path: Path, clock=time.time, processes=process_starts, app_server=is_app_server
+    ):
         self.clock = clock
         self.processes = processes
+        self.app_server = app_server
         self.db = sqlite3.connect(path, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(f"""
@@ -168,19 +171,26 @@ class Store:
         started = pid and self.processes([pid]).get(pid)
         return (pid, started) if started else (None, None)
 
-    def retire_replaced(self, agent_id: str, runtime: str, process: tuple):
-        """Retire other Claude enrollments in this one's process, exactly as retire does.
+    def replaces(self, runtime: str, process: tuple) -> bool:
+        """Whether a session enrolling in this process ends the process's previous one.
 
-        Claude Code runs one conversation per process, so after /clear or /resume the
-        process's previous conversation has ended. Codex is exempt: one app server runs
-        many threads. Without a recorded process, nothing matches.
+        Claude Code runs one conversation per process, and terminal Codex (--no-daemon) one
+        thread, so after /clear or /resume the previous one has ended. A Codex app server,
+        the daemon or the desktop app's, runs many threads. Without a recorded process,
+        nothing is replaced.
         """
-        if runtime == "claude":
-            self.db.execute(
-                "UPDATE agents SET active=0 WHERE active=1 AND runtime=? AND id!=? AND pid=? "
-                "AND abs(started-?)<=?",
-                (runtime, agent_id, *process, START_SLACK),
-            )
+        pid = process[0]
+        return pid is not None and (
+            runtime == "claude" or (runtime == "codex" and not self.app_server(pid))
+        )
+
+    def retire_replaced(self, agent_id: str, runtime: str, process: tuple):
+        """Retire other enrollments of this runtime in this one's process, as retire does."""
+        self.db.execute(
+            "UPDATE agents SET active=0 WHERE active=1 AND runtime=? AND id!=? AND pid=? "
+            "AND abs(started-?)<=?",
+            (runtime, agent_id, *process, START_SLACK),
+        )
 
     def register(
         self, name: str, runtime: str, native_id: str, endpoint: dict, cwd="", pid=None
@@ -195,6 +205,7 @@ class Store:
         if runtime not in ("codex", "claude", "mailbox"):
             raise WireError("invalid_runtime", "Runtime must be codex, claude, or mailbox")
         process = self.process(pid)
+        replaces = self.replaces(runtime, process)  # Reads ps, so before the write lock.
         # An exited session's name is free, whether or not anything listed sessions since.
         self.retire_exited([name])
         token = secrets.token_urlsafe(32)
@@ -206,7 +217,8 @@ class Store:
                 "UPDATE agents SET active=0 WHERE runtime=? AND native_id=? AND active=1",
                 (runtime, native_id),
             )
-            self.retire_replaced(agent_id, runtime, process)
+            if replaces:
+                self.retire_replaced(agent_id, runtime, process)
             if self.db.execute(
                 "SELECT 1 FROM agents WHERE name=? AND active=1", (name,)
             ).fetchone():
@@ -366,7 +378,8 @@ class Store:
             "UPDATE agents SET endpoint=?,cwd=?,pid=?,started=? WHERE id=?",
             (json.dumps(endpoint), cwd, *process, agent["id"]),
         )
-        self.retire_replaced(agent["id"], agent["runtime"], process)
+        if self.replaces(agent["runtime"], process):
+            self.retire_replaced(agent["id"], agent["runtime"], process)
         return self.public_agent(self.agent(agent["id"]))
 
     def session_heartbeat(
