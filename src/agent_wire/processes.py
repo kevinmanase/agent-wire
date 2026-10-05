@@ -1,24 +1,26 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Portable process checks for Linux and macOS: os.kill and ps, not /proc."""
 
+import calendar
 import os
 import subprocess
+import time
 from pathlib import Path
 
 
 def ps(*args: str) -> str:
-    # UTC keeps a recorded start time stable when the machine's time zone changes.
+    # Bounded: the broker calls this on its event loop.
     return subprocess.run(
         ["ps", *args],
         capture_output=True,
         text=True,
-        timeout=5,
+        timeout=2,
         env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
     ).stdout
 
 
-def process_starts(pids) -> dict[int, str | None]:
-    """Map each running process to its start time, or None when ps can't read it.
+def process_starts(pids) -> dict[int, float | None]:
+    """Map each running process to its start time in epoch seconds, or None when unreadable.
 
     A process that no longer exists is left out.
     """
@@ -39,7 +41,11 @@ def process_starts(pids) -> dict[int, str | None]:
         for line in output.splitlines():
             pid, _, start = line.strip().partition(" ")
             if pid.isdigit() and int(pid) in starts:
-                starts[int(pid)] = " ".join(start.split())
+                try:
+                    started = time.strptime(" ".join(start.split()), "%a %b %d %H:%M:%S %Y")
+                except ValueError:
+                    continue
+                starts[int(pid)] = calendar.timegm(started)
     return starts
 
 

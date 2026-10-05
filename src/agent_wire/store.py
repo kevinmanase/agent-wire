@@ -42,6 +42,9 @@ REPORT_COLUMNS = {
     "ask_raised_at": "REAL",
 }
 STALE_AFTER = 300
+# Linux derives a process's start time from a wall-clock boot time, which jitters and moves
+# when the clock steps. A start this far from the recorded one means a reused pid.
+START_SLACK = 60
 FOLD_AFTER = 6 * 3600
 # A finished entry: done, no contact for FOLD_AFTER, no open ask, and no message in flight.
 FINISHED = (
@@ -137,7 +140,7 @@ class Store:
             );
         """)
         # The runtime's process and its start time; a reused pid has a different start.
-        self.add_missing_columns("agents", {"mode": "TEXT", "pid": "INTEGER", "started": "TEXT"})
+        self.add_missing_columns("agents", {"mode": "TEXT", "pid": "INTEGER", "started": "REAL"})
         self.add_missing_columns("session_reports", REPORT_COLUMNS)
         self.db.execute(
             "UPDATE messages SET status='unknown', detail='Broker restarted during delivery' "
@@ -246,7 +249,8 @@ class Store:
             [
                 (row["id"],)
                 for row in rows
-                if row["pid"] not in starts or starts[row["pid"]] not in (None, row["started"])
+                if row["pid"] not in starts
+                or abs((starts[row["pid"]] or row["started"]) - row["started"]) > START_SLACK
             ],
         )
 

@@ -14,7 +14,7 @@ from agent_wire.store import Store
 from .test_broker import Adapter
 from .test_store import enroll, send
 
-START = "Mon Oct 5 09:00:00 2026"
+START = 1_791_200_000.0
 
 
 class Processes:
@@ -55,7 +55,8 @@ def test_exited_sessions_retire_and_their_messages_fail(store, processes):
     assert store.agent(live["agent"]["id"])["started"] == START
     queued = send(store, live, dead)
     del processes.table[200]
-    processes.table[300] = "Tue Oct 6 10:00:00 2026"  # The pid now names a new process.
+    processes.table[100] = START + 30  # A clock step moves the same process's start.
+    processes.table[300] = START + 3600  # The pid now names a new process.
     processes.table[400] = None  # Running, but its start time can't be read.
     listed = {s["name"] for s in store.sessions(include_finished=True)["sessions"]}
     assert listed == {"live", "unreadable", "mailbox"}
