@@ -96,6 +96,18 @@ of process exit or task completion. A stopped turn sets activity to idle and
 preserves a waiting/blocked/done report. Explicit retirement removes the entry
 from the active list; re-enrollment never transfers an old report.
 
+An enrollment also ends when its runtime process exits. At enrollment and on
+endpoint refresh, the broker records the process ID and its start time: Claude
+Code's from its native session record, Codex's from the hook's nearest `codex`
+ancestor process, since Codex metadata names no process. Listing sessions or
+agents, routing a message, and attempting a delivery check the sessions involved
+with `os.kill(pid, 0)` and `ps -o lstart=`, with no model call or agent
+heartbeat. A missing process, or a reused PID with a different start time,
+retires the enrollment exactly like `retire`, and its queued messages fail.
+Enrollments without a recorded process (CLI `register` for Codex, mailbox
+sessions, older enrollments) are unchanged until a hook refreshes them. If the
+start time can't be read, the session stays active.
+
 ## Message lifecycle
 
 Each message has a UUID, global monotonic `seq`, sender and recipient enrollment

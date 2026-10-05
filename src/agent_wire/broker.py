@@ -34,7 +34,9 @@ class Broker:
                 params["native_id"],
                 params.get("endpoint", {}),
             )
-            result = self.store.register(**{**params, "endpoint": endpoint})
+            # Claude's native record names its process; a Codex hook sends its own runtime's.
+            pid = endpoint.pop("pid", params.get("pid"))
+            result = self.store.register(**{**params, "endpoint": endpoint, "pid": pid})
             self.wake.set()
             return result
         token = params.get("session_handle")
@@ -46,12 +48,13 @@ class Broker:
             return self.store.sessions(**rest)
         agent = self.store.authenticate(token)
         if method == "session_refresh":
-            if set(rest) != {"endpoint", "cwd"}:
+            if not {"endpoint", "cwd"} <= set(rest) <= {"endpoint", "cwd", "pid"}:
                 raise WireError("invalid_input", "session_refresh needs endpoint and cwd")
             endpoint = await self.adapters.validate(
                 agent["runtime"], agent["native_id"], rest["endpoint"]
             )
-            return self.store.refresh_endpoint(token, endpoint, rest["cwd"])
+            pid = endpoint.pop("pid", rest.get("pid"))
+            return self.store.refresh_endpoint(token, endpoint, rest["cwd"], pid)
         if method == "agents_list":
             if rest:
                 raise WireError("invalid_input", "agents_list accepts only a session credential")
@@ -81,6 +84,7 @@ class Broker:
                     await attempt(row)
 
             async def attempt(row):
+                self.store.retire_exited(row["recipient"])
                 self.store.expire()
                 agent = self.store.agent(row["recipient"])
                 if not agent["active"]:

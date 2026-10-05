@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal, get_args
 
 from .errors import WireError
+from .processes import process_starts
 
 MAX_BODY = 65_536
 MAX_PENDING = 64
@@ -96,8 +97,9 @@ def raised_at(new: str) -> str:
 
 
 class Store:
-    def __init__(self, path: Path, clock=time.time):
+    def __init__(self, path: Path, clock=time.time, processes=process_starts):
         self.clock = clock
+        self.processes = processes
         self.db = sqlite3.connect(path, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(f"""
@@ -134,7 +136,8 @@ class Store:
                 needs_update INTEGER NOT NULL DEFAULT 1
             );
         """)
-        self.add_missing_columns("agents", {"mode": "TEXT"})
+        # The runtime's process and its start time; a reused pid has a different start.
+        self.add_missing_columns("agents", {"mode": "TEXT", "pid": "INTEGER", "started": "TEXT"})
         self.add_missing_columns("session_reports", REPORT_COLUMNS)
         self.db.execute(
             "UPDATE messages SET status='unknown', detail='Broker restarted during delivery' "
@@ -155,7 +158,16 @@ class Store:
     def public_agent(row) -> dict:
         return {key: row[key] for key in ("id", "name", "runtime", "native_id", "cwd", "active")}
 
-    def register(self, name: str, runtime: str, native_id: str, endpoint: dict, cwd="") -> dict:
+    def process(self, pid) -> tuple:
+        """The (pid, start time) to record, or (None, None) when it can't be read."""
+        if pid is not None and (type(pid) is not int or pid < 1):
+            raise WireError("invalid_input", "pid must be a positive integer or null")
+        started = pid and self.processes([pid]).get(pid)
+        return (pid, started) if started else (None, None)
+
+    def register(
+        self, name: str, runtime: str, native_id: str, endpoint: dict, cwd="", pid=None
+    ) -> dict:
         if not isinstance(name, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}", name):
             raise WireError("invalid_name", "Name must contain 1–64 letters, digits, dots, _ or -")
         if name.lower() == "ready":
@@ -165,6 +177,7 @@ class Store:
             raise WireError("invalid_input", "cwd must be text, at most 4096 UTF-8 bytes")
         if runtime not in ("codex", "claude", "mailbox"):
             raise WireError("invalid_runtime", "Runtime must be codex, claude, or mailbox")
+        process = self.process(pid)
         token = secrets.token_urlsafe(32)
         agent_id = str(uuid.uuid4())
         self.db.execute("BEGIN IMMEDIATE")
@@ -180,7 +193,7 @@ class Store:
             )
             self.db.execute(
                 "INSERT INTO agents (id,name,runtime,native_id,endpoint,cwd,credential,active,"
-                "created) VALUES (?,?,?,?,?,?,?,?,?)",
+                "created,pid,started) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     agent_id,
                     name,
@@ -191,6 +204,7 @@ class Store:
                     digest(token),
                     1,
                     self.clock(),
+                    *process,
                 ),
             )
             self.db.execute("COMMIT")
@@ -215,7 +229,31 @@ class Store:
             raise WireError("unauthorized", "Invalid or retired session credential")
         return row
 
+    def retire_exited(self, target: str | None = None):
+        """Retire active sessions whose process has exited, exactly as retire does.
+
+        A session without a recorded process, or whose start time can't be read, stays.
+        """
+        query = "SELECT id,pid,started FROM agents WHERE active=1 AND pid IS NOT NULL"
+        params = ()
+        if target is not None:
+            query += " AND (id=? OR name=?)"
+            params = (target, target)
+        rows = self.db.execute(query, params).fetchall()
+        if not rows:
+            return
+        starts = self.processes([row["pid"] for row in rows])
+        self.db.executemany(
+            "UPDATE agents SET active=0 WHERE id=?",
+            [
+                (row["id"],)
+                for row in rows
+                if row["pid"] not in starts or starts[row["pid"]] not in (None, row["started"])
+            ],
+        )
+
     def agents(self) -> list[dict]:
+        self.retire_exited()
         return [
             self.public_agent(r)
             for r in self.db.execute("SELECT * FROM agents WHERE active=1 ORDER BY name")
@@ -294,14 +332,15 @@ class Store:
             raise WireError("no_report", "Publish a report before setting an ask")
         return self.session(agent["id"])
 
-    def refresh_endpoint(self, token: str, endpoint: dict, cwd: str) -> dict:
+    def refresh_endpoint(self, token: str, endpoint: dict, cwd: str, pid=None) -> dict:
         # Only called after native validation by the broker; recheck after that async work.
         agent = self.authenticate(token)
         if not isinstance(cwd, str) or len(cwd.encode()) > 4096:
             raise WireError("invalid_input", "cwd must be text, at most 4096 UTF-8 bytes")
+        # A resumed conversation can run in a new process.
         self.db.execute(
-            "UPDATE agents SET endpoint=?,cwd=? WHERE id=?",
-            (json.dumps(endpoint), cwd, agent["id"]),
+            "UPDATE agents SET endpoint=?,cwd=?,pid=?,started=? WHERE id=?",
+            (json.dumps(endpoint), cwd, *self.process(pid), agent["id"]),
         )
         return self.public_agent(self.agent(agent["id"]))
 
@@ -392,6 +431,7 @@ class Store:
             )
         if not isinstance(after, str) or len(after) > 64:
             raise WireError("invalid_input", "Invalid session cursor")
+        self.retire_exited()
         now = self.clock()
         clauses, params = ["a.active=1"], []
         if runtime is not None:
@@ -437,6 +477,7 @@ class Store:
         }
 
     def resolve(self, target: str):
+        self.retire_exited(target)
         rows = self.db.execute(
             "SELECT * FROM agents WHERE active=1 AND (id=? OR name=?)", (target, target)
         ).fetchall()

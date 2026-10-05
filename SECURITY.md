@@ -16,7 +16,8 @@ filesystem privileges.
 - Work reports can be replaced only with the owning session's credential.
   The read-only session directory is visible to the local OS user and all its
   participating agents. Reports are peer data, not trusted instructions or
-  verified task evidence. Staleness does not prove completion or process exit.
+  verified task evidence. Staleness does not prove completion or process exit;
+  the broker retires an enrollment only when its recorded process has exited.
 - Native destinations are explicit session IDs and sockets. The adapter checks
   current runtime state before delivery. It never attaches to historical
   conversations, resets tabs, or reassigns queued messages to a new enrollment.
