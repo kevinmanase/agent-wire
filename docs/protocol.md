@@ -233,6 +233,13 @@ Acknowledgements and replies remain the evidence of receipt. Resolving a class
 does not re-enroll the sender, change either runtime's settings, resume a thread,
 or retry a previously submitted message.
 
+An idle Claude session starts a new turn as soon as an accepted frame arrives;
+it doesn't wait for its next prompt. Observed on Claude Code 2.1.289 (interactive
+CLI, bypass mode) with a throwaway session and this adapter's `deliver`: a frame
+with `from-mode="bypass"` started a turn within seconds, both before the first
+prompt and after a finished turn. The same frame sent bare was held in a review
+prompt, and no turn started.
+
 This adapter uses an **observed internal protocol**, not a promised stable
 Anthropic integration API. It is independent implementation code; no vendor
 binary or extracted proprietary source is distributed here. A completed
