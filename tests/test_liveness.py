@@ -101,7 +101,8 @@ def test_a_resumed_conversation_records_its_new_process(store, processes):
 
 def test_an_unreadable_process_keeps_the_recorded_one(store, processes):
     a = enroll(store, "a", pid=100)
-    processes.table[100] = None  # ps timed out.
+    store.refresh_endpoint(a["session_handle"], {}, "/repo", None)  # The hook's ps failed.
+    processes.table[100] = None  # The broker's ps timed out.
     store.refresh_endpoint(a["session_handle"], {}, "/repo", 100)
     assert store.agent(a["agent"]["id"])["pid"] == 100
     del processes.table[100]

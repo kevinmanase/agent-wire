@@ -358,8 +358,9 @@ class Store:
             raise WireError("invalid_input", "cwd must be text, at most 4096 UTF-8 bytes")
         # A resumed conversation can run in a new process.
         process = self.process(pid)
-        if process == (None, None) and pid == agent["pid"]:
-            # Unreadable, not proof of a new process: keep the recorded one for the exit check.
+        if process == (None, None) and pid in (None, agent["pid"]):
+            # Unknown or unreadable, not proof of a new process: keep the recorded one for the
+            # exit check. A Codex hook sends no pid when its own ps fails.
             process = (agent["pid"], agent["started"])
         self.db.execute(
             "UPDATE agents SET endpoint=?,cwd=?,pid=?,started=? WHERE id=?",
