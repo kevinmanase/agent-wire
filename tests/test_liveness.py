@@ -145,6 +145,9 @@ def test_a_new_terminal_codex_thread_replaces_the_one_in_its_process(store, proc
     codex = enroll(store, "codex", "codex", 300)
     enroll(store, "codex-2", "codex", 300)
     assert store.agent(codex["agent"]["id"])["active"] == 1
+    mailbox = enroll(store, "mailbox", pid=200)
+    enroll(store, "mailbox-2", pid=200)
+    assert store.agent(mailbox["agent"]["id"])["active"] == 1
 
 
 def test_resuming_a_claude_conversation_replaces_the_one_in_its_process(store):
