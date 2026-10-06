@@ -32,6 +32,7 @@ REPORT_TEXT = {
     "stage": 64,
 }
 ASK_FIELDS = ("to", "text", "kind")
+# Preset answers an ask may carry, in the asker's order.
 REPORT_COLUMNS = {
     "lane": "TEXT NOT NULL DEFAULT ''",
     "stage": "TEXT NOT NULL DEFAULT ''",
@@ -39,6 +40,7 @@ REPORT_COLUMNS = {
     "ask_to": "TEXT",
     "ask_text": "TEXT",
     "ask_kind": "TEXT",
+    "ask_options": "TEXT",
     "ask_raised_at": "REAL",
 }
 STALE_AFTER = 300
@@ -72,18 +74,32 @@ def check_ask(ask):
     # An ask is the agent's claim that it needs a person; the broker never acts on it.
     if ask is None:
         return
-    if not isinstance(ask, dict) or set(ask) != set(ASK_FIELDS):
-        raise WireError("invalid_input", "ask must be null or an object of to, text, kind")
+    if not isinstance(ask, dict) or set(ask) - {"options"} != set(ASK_FIELDS):
+        raise WireError(
+            "invalid_input", "ask must be null or an object of to, text, kind, and optional options"
+        )
     bounded_text(ask["to"], "ask.to", 64)
     bounded_text(ask["text"], "ask.text", 512)
     if ask["kind"] not in ASK_KINDS:
         raise WireError("invalid_input", f"ask.kind must be one of {ASK_KINDS}")
+    # Preset answers in the asker's order, limited in characters as the shared contract says.
+    options = ask.get("options")
+    if options is None:
+        return
+    if not isinstance(options, list) or not 2 <= len(options) <= 4:
+        raise WireError("invalid_input", "ask.options must be a list of 2 to 4 answers")
+    for option in options:
+        if not isinstance(option, str) or not option.strip() or len(option) > 80:
+            raise WireError(
+                "invalid_input", "each ask option must be nonempty text, at most 80 characters"
+            )
 
 
 def ask_columns(ask: dict | None, now: float) -> dict:
     """The ask's column values, under the names raised_at() reads."""
     return {
         **{f"ask_{key}": ask and ask[key] for key in ASK_FIELDS},
+        "ask_options": ask and ask.get("options") and json.dumps(ask["options"]),
         "ask_raised_at": now if ask else None,
     }
 
@@ -97,6 +113,7 @@ def raised_at(new: str) -> str:
         f"CASE WHEN {new}ask_kind IS NULL THEN NULL "
         f"WHEN ask_raised_at IS NOT NULL AND ask_to IS {new}ask_to "
         f"AND ask_text IS {new}ask_text AND ask_kind IS {new}ask_kind "
+        f"AND ask_options IS {new}ask_options "
         f"THEN ask_raised_at ELSE {new}ask_raised_at END"
     )
 
@@ -357,11 +374,12 @@ class Store:
         agent = self.authenticate(token)
         check_ask(ask)
         now = self.clock()
+        columns = ask_columns(ask, now)
         changed = self.db.execute(
             f"UPDATE session_reports SET ask_raised_at={raised_at(':')},"
-            "ask_to=:ask_to,ask_text=:ask_text,ask_kind=:ask_kind,last_seen=:now "
-            "WHERE agent_id=:agent_id AND reported_at IS NOT NULL",
-            {**ask_columns(ask, now), "now": now, "agent_id": agent["id"]},
+            + "".join(f"{key}=:{key}," for key in columns if key != "ask_raised_at")
+            + "last_seen=:now WHERE agent_id=:agent_id AND reported_at IS NOT NULL",
+            {**columns, "now": now, "agent_id": agent["id"]},
         ).rowcount
         if not changed and ask is not None:
             raise WireError("no_report", "Publish a report before setting an ask")
@@ -433,6 +451,8 @@ class Store:
             result["report"]["ask"] = row["ask_kind"] and {
                 key: row[f"ask_{key}"] for key in (*ASK_FIELDS, "raised_at")
             }
+            if row["ask_options"]:
+                result["report"]["ask"]["options"] = json.loads(row["ask_options"])
             result["report"]["needs_update"] = bool(row["needs_update"])
         return result
 

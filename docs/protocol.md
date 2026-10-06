@@ -38,12 +38,17 @@ Four more optional fields describe where the work sits and what it needs:
 | `lane` | text, ≤ 64 bytes, default `""` | Which lane the work belongs to, such as `api`. Not checked against a list. |
 | `stage` | text, ≤ 64 bytes, default `""` | Where the work is, such as a ticket-graph node like `REVIEW`. |
 | `role` | `main`, `lead`, `worker`, or null | The main orchestrator, a lane lead, or a worker. |
-| `ask` | object or null | What the session needs from a person: `to` (≤ 64 bytes), `text` (≤ 512 bytes), and `kind` (`decide`, `act`, or `approve`). |
+| `ask` | object or null | What the session needs from a person: `to` (≤ 64 bytes), `text` (≤ 512 bytes), `kind` (`decide`, `act`, or `approve`), and optional `options`. |
 
-`ask.to` and `ask.text` must be nonempty, and an ask accepts no other keys. In
+`ask.to` and `ask.text` must be nonempty, and an ask accepts no other keys.
+`ask.options` is a list of 2 to 4 preset answers, each nonempty and at most 80
+characters, in the order the asker prefers: put a recommended one first and say
+so in its text. An ask without options is free text. Answering with an option
+sends that option's text as the answer, exactly like a typed answer. In
 `sessions_list` the ask also carries `raised_at`, which the server sets when
-the ask first appears. Resending the same `to`, `text`, and `kind` keeps
-`raised_at`; changing any of them or omitting the ask starts over. Like every
+the ask first appears, and `options` when it has them. Resending the same
+`to`, `text`, `kind`, and `options` keeps `raised_at`; changing any of them,
+the options' order included, or omitting the ask starts over. Like every
 other optional field, an omitted `lane`, `stage`, `role`, or `ask` is cleared.
 An ask is the agent's claim that it needs a person. It is never approval, and
 the broker never acts on it. Clients that send none of these fields keep

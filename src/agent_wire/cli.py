@@ -62,10 +62,21 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--ask-to", help="Who the ask is for")
             sub.add_argument("--ask-text", help="What the session needs from that person")
             sub.add_argument("--ask-kind", choices=ASK_KINDS)
+            sub.add_argument(
+                "--ask-option",
+                dest="ask_options",
+                action="append",
+                help="A preset answer; give 2 to 4, recommended first",
+            )
         if name == "ask":
             sub.add_argument("--to", help="Who the ask is for")
             sub.add_argument("--text", help="What the session needs from that person")
             sub.add_argument("--kind", choices=ASK_KINDS)
+            sub.add_argument(
+                "--option",
+                action="append",
+                help="A preset answer; give 2 to 4, recommended first",
+            )
             sub.add_argument("--clear", action="store_true", help="Clear the open ask")
         if name == "inbox":
             sub.add_argument("--after", type=int, default=0)
@@ -143,14 +154,20 @@ async def run(args):
     token = read_identity(args.identity)
     if args.command == "report":
         ask = {
-            key: value for key in ASK_FIELDS if (value := getattr(args, f"ask_{key}")) is not None
+            key: value
+            for key in (*ASK_FIELDS, "options")
+            if (value := getattr(args, f"ask_{key}")) is not None
         }
         fields = {key: getattr(args, key) for key in ("task", "status", "role", *REPORT_TEXT)}
         return await call(state, "session_update", session_handle=token, ask=ask or None, **fields)
     if args.command == "ask":
         ask = {key: getattr(args, key) for key in ASK_FIELDS}
+        if args.option:
+            ask["options"] = args.option
         if args.clear == any(ask.values()):
-            raise WireError("invalid_input", "Give --to, --text, and --kind, or --clear alone")
+            raise WireError(
+                "invalid_input", "Give --to, --text, --kind, and any --option, or --clear alone"
+            )
         return await call(
             state, "session_ask", session_handle=token, ask=None if args.clear else ask
         )
