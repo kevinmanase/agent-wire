@@ -315,6 +315,14 @@ def test_report_fields_survive_restart(tmp_path):
         {"ask": {**ASK, "text": "x" * 513}},
         {"ask": {**ASK, "text": 5}},
         {"ask": {**ASK, "kind": "merge"}},
+        {"ask": {**ASK, "options": "a, b"}},
+        {"ask": {**ASK, "options": []}},
+        {"ask": {**ASK, "options": ["a"]}},
+        {"ask": {**ASK, "options": ["a", "b", "c", "d", "e"]}},
+        {"ask": {**ASK, "options": ["a", ""]}},
+        {"ask": {**ASK, "options": ["a", " "]}},
+        {"ask": {**ASK, "options": ["a", "x" * 81]}},
+        {"ask": {**ASK, "options": ["a", 2]}},
     ],
 )
 def test_invalid_report_fields_leave_previous_report_unchanged(store, fields):
@@ -335,6 +343,33 @@ def test_report_fields_at_their_bounds(store):
     )["report"]
     assert report["lane"] == "é" * 32
     assert report["ask"]["text"] == "é" * 256
+    options = ["é" * 80] * 4
+    report = store.session_update(
+        a["session_handle"], task="Edge", status="working", ask={**ask, "options": options}
+    )["report"]
+    assert report["ask"]["options"] == options
+
+
+def test_ask_options_are_reported_in_order_and_count_as_part_of_the_ask(store, now):
+    token = enroll(store)["session_handle"]
+    options = ["Merge api first (recommended)", "Merge mobile first", "Hold both"]
+
+    def update(ask):
+        now[0] += 60
+        return store.session_update(token, task="Ship API", status="waiting", ask=ask)["report"]
+
+    assert update({**ASK, "options": options})["ask"] == {
+        **ASK,
+        "options": options,
+        "raised_at": 1060,
+    }
+    assert store.sessions()["sessions"][0]["report"]["ask"]["options"] == options
+    assert update({**ASK, "options": options})["ask"]["raised_at"] == 1060
+    # Changing, reordering, or dropping the options raises a new ask.
+    for changed in (options[:2], options[::-1], None):
+        assert update({**ASK, "options": changed})["ask"]["raised_at"] == now[0]
+    # Without options the ask reads as before.
+    assert update(ASK)["ask"] == {**ASK, "raised_at": now[0] - 60}
 
 
 async def test_ask_call_changes_only_the_ask(store, now):
@@ -356,6 +391,9 @@ async def test_ask_call_changes_only_the_ask(store, now):
     assert store.session(a["agent"]["id"])["last_seen"] == 1060
     assert (await ask(ASK))["report"]["ask"]["raised_at"] == 1060
     assert (await ask({**ASK, "kind": "approve"}))["report"]["ask"]["raised_at"] == 1180
+    choice = {**ASK, "options": ["Yes", "No"]}
+    assert (await ask(choice))["report"]["ask"] == {**choice, "raised_at": 1240}
+    assert (await ask(choice))["report"]["ask"]["raised_at"] == 1240
     cleared = (await ask(None))["report"]
     assert cleared == {**before, "needs_update": True}
     assert (await ask(None))["report"] == cleared

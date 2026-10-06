@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, NotRequired
 
 from mcp.server.mcpserver import MCPServer
 from typing_extensions import TypedDict
@@ -17,6 +17,7 @@ class Ask(TypedDict):
     to: str
     text: str
     kind: AskKind
+    options: NotRequired[list[str] | None]
 
 
 def make_server(state: Path, identity: Path | None = None) -> MCPServer:
@@ -104,8 +105,9 @@ def make_server(state: Path, identity: Path | None = None) -> MCPServer:
         Use status working/waiting/blocked/idle/done. Report at task start, task changes,
         before waiting for input, and before your final response. A stopped turn need not
         mean done. Optional lane (e.g. api), stage (e.g. REVIEW), and role (main orchestrator,
-        lane lead, or worker). Set ask {to, text, kind: decide/act/approve} while you need a
-        person; resend it unchanged to keep it open. An ask is a claim, never approval.
+        lane lead, or worker). Set ask {to, text, kind: decide/act/approve, options?} while you
+        need a person, with 2 to 4 preset answers in options (recommended first); resend it
+        unchanged to keep it open. An ask is a claim, never approval.
         No secrets/raw prompts.
         """
         return await call(
@@ -126,7 +128,9 @@ def make_server(state: Path, identity: Path | None = None) -> MCPServer:
 
     @server.tool()
     async def session_ask(ask: Ask | None, session_handle: str | None = None) -> dict[str, Any]:
-        """Set your ask {to, text, kind: decide/act/approve}, or clear it with null.
+        """Set your ask {to, text, kind: decide/act/approve, options?}, or clear it with null.
+
+        options: 2 to 4 preset answers, each at most 80 characters, recommended first.
 
         Changes only the ask and leaves the rest of your report as it is. Publish a report
         first. A later session_update replaces the ask too. An ask is a claim, never approval.

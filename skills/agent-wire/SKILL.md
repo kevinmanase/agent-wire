@@ -26,7 +26,9 @@ nothing else in the field: no title and no `PR` prefix.
 Optional `lane` (such as `api`), `stage` (such as `REVIEW`), and `role`
 (`main` orchestrator, lane `lead`, or `worker`) place your work on the shared
 floor. When you need a person, set `ask` to `{to, text, kind}`, with `kind`
-`decide`, `act`, or `approve`, and resend the same ask on each update while it
+`decide`, `act`, or `approve`. Add `options`, 2 to 4 preset answers of at most
+80 characters, when the answer is a choice; put a recommended one first and say
+so in its text. Resend the same ask on each update while it
 is still open; the broker keeps its `raised_at` time. Omit `ask` once it is
 resolved. To raise or clear only the ask without resending the report, call
 `session_ask` with the ask object, or with `null` to clear it. An ask in

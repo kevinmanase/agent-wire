@@ -271,6 +271,11 @@ async def test_sessions_all_flag_requests_finished_sessions(monkeypatch, tmp_pat
     ("flags", "expected"),
     [
         (("--to", "kevin"), {"to": "kevin", "text": None, "kind": None}),
+        (
+            ("--to", "kevin", "--option", "a", "--option", "b, c"),
+            {"to": "kevin", "text": None, "kind": None, "options": ["a", "b, c"]},
+        ),
+        (("--clear", "--option", "a"), "invalid_input"),
         (("--clear", "--to", "kevin"), "invalid_input"),
         ((), "invalid_input"),
     ],

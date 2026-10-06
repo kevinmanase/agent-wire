@@ -136,6 +136,9 @@ async def test_bound_stdio_server_uses_its_own_identity():
             raised = {**ask, "text": "Merge now?"}
             result = await client.call_tool("session_ask", {"ask": raised})
             assert result.structured_content["report"]["ask"]["text"] == "Merge now?"
+            choice = {**raised, "options": ["Yes", "No"]}
+            result = await client.call_tool("session_ask", {"ask": choice})
+            assert result.structured_content["report"]["ask"]["options"] == ["Yes", "No"]
             assert result.structured_content["report"]["stage"] == "REVIEW"
             for bad in ({}, {"ask": {**ask, "kind": "merge"}}):
                 assert (await client.call_tool("session_ask", bad)).is_error
