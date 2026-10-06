@@ -207,7 +207,7 @@ optional detail/repository/branch/ticket, and timestamps. They can also name a
 `lane`, a `stage`, a `role` (`main`, `lead`, or `worker`), and an `ask`: what
 the session needs from a person, with `to`, `text`, and `kind` (`decide`,
 `act`, or `approve`), and optionally 2 to 4 preset answers in `options`
-(`--option`, repeatable; recommended first). The broker records when an ask was first raised and keeps
+(`--option` or `--ask-option`, repeatable; recommended first). The broker records when an ask was first raised and keeps
 that time while the same ask stays. An ask is a claim, never approval.
 `agent-wire ask` and `session_ask` change only the ask; `report` still replaces
 the whole report, ask included. The table shows lane, stage, and a short ask

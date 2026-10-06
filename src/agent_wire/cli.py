@@ -62,6 +62,12 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--ask-to", help="Who the ask is for")
             sub.add_argument("--ask-text", help="What the session needs from that person")
             sub.add_argument("--ask-kind", choices=ASK_KINDS)
+            sub.add_argument(
+                "--ask-option",
+                dest="ask_options",
+                action="append",
+                help="A preset answer; give 2 to 4, recommended first",
+            )
         if name == "ask":
             sub.add_argument("--to", help="Who the ask is for")
             sub.add_argument("--text", help="What the session needs from that person")
@@ -148,7 +154,9 @@ async def run(args):
     token = read_identity(args.identity)
     if args.command == "report":
         ask = {
-            key: value for key in ASK_FIELDS if (value := getattr(args, f"ask_{key}")) is not None
+            key: value
+            for key in (*ASK_FIELDS, "options")
+            if (value := getattr(args, f"ask_{key}")) is not None
         }
         fields = {key: getattr(args, key) for key in ("task", "status", "role", *REPORT_TEXT)}
         return await call(state, "session_update", session_handle=token, ask=ask or None, **fields)

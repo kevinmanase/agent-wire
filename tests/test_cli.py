@@ -298,3 +298,24 @@ async def test_ask_sets_or_clears_only_the_ask(monkeypatch, tmp_path, flags, exp
     else:
         await cli_module.run(args)
         assert requests == [("session_ask", {"session_handle": "token", "ask": expected})]
+
+
+async def test_report_resends_an_ask_with_its_options(monkeypatch, tmp_path):
+    requests = []
+
+    async def fake_call(state, method, **params):
+        requests.append(params["ask"])
+
+    monkeypatch.setattr(cli_module, "call", fake_call)
+    monkeypatch.setattr(cli_module, "read_identity", lambda path: "token")
+    base = ["--state", str(tmp_path), "report", "--identity", "own.json", "--task", "T"]
+    ask = ["--ask-to", "kevin", "--ask-kind", "decide", "--ask-text", "Merge?"]
+    for flags in (
+        ["--status", "waiting", *ask, "--ask-option", "Yes", "--ask-option", "No"],
+        ["--status", "working"],
+    ):
+        await cli_module.run(cli_module.parser().parse_args([*base, *flags]))
+    assert requests == [
+        {"to": "kevin", "text": "Merge?", "kind": "decide", "options": ["Yes", "No"]},
+        None,
+    ]
