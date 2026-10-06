@@ -33,8 +33,6 @@ REPORT_TEXT = {
 }
 ASK_FIELDS = ("to", "text", "kind")
 # Preset answers an ask may carry, in the asker's order.
-ASK_OPTIONS = (2, 4)
-OPTION_CHARS = 80
 REPORT_COLUMNS = {
     "lane": "TEXT NOT NULL DEFAULT ''",
     "stage": "TEXT NOT NULL DEFAULT ''",
@@ -84,18 +82,17 @@ def check_ask(ask):
     bounded_text(ask["text"], "ask.text", 512)
     if ask["kind"] not in ASK_KINDS:
         raise WireError("invalid_input", f"ask.kind must be one of {ASK_KINDS}")
+    # Preset answers in the asker's order, limited in characters as the shared contract says.
     options = ask.get("options")
-    low, high = ASK_OPTIONS
-    if options is not None and (
-        not isinstance(options, list)
-        or not low <= len(options) <= high
-        or not all(isinstance(o, str) and o.strip() and len(o) <= OPTION_CHARS for o in options)
-    ):
-        raise WireError(
-            "invalid_input",
-            f"ask.options must be {low} to {high} nonempty texts of at most {OPTION_CHARS} "
-            "characters",
-        )
+    if options is None:
+        return
+    if not isinstance(options, list) or not 2 <= len(options) <= 4:
+        raise WireError("invalid_input", "ask.options must be a list of 2 to 4 answers")
+    for option in options:
+        if not isinstance(option, str) or not option.strip() or len(option) > 80:
+            raise WireError(
+                "invalid_input", "each ask option must be nonempty text, at most 80 characters"
+            )
 
 
 def ask_columns(ask: dict | None, now: float) -> dict:
@@ -377,12 +374,12 @@ class Store:
         agent = self.authenticate(token)
         check_ask(ask)
         now = self.clock()
+        columns = ask_columns(ask, now)
         changed = self.db.execute(
             f"UPDATE session_reports SET ask_raised_at={raised_at(':')},"
-            "ask_to=:ask_to,ask_text=:ask_text,ask_kind=:ask_kind,ask_options=:ask_options,"
-            "last_seen=:now "
-            "WHERE agent_id=:agent_id AND reported_at IS NOT NULL",
-            {**ask_columns(ask, now), "now": now, "agent_id": agent["id"]},
+            + "".join(f"{key}=:{key}," for key in columns if key != "ask_raised_at")
+            + "last_seen=:now WHERE agent_id=:agent_id AND reported_at IS NOT NULL",
+            {**columns, "now": now, "agent_id": agent["id"]},
         ).rowcount
         if not changed and ask is not None:
             raise WireError("no_report", "Publish a report before setting an ask")
@@ -454,7 +451,7 @@ class Store:
             result["report"]["ask"] = row["ask_kind"] and {
                 key: row[f"ask_{key}"] for key in (*ASK_FIELDS, "raised_at")
             }
-            if row["ask_kind"] and row["ask_options"]:
+            if row["ask_options"]:
                 result["report"]["ask"]["options"] = json.loads(row["ask_options"])
             result["report"]["needs_update"] = bool(row["needs_update"])
         return result
