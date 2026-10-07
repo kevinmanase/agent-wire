@@ -42,7 +42,10 @@ REPORT_COLUMNS = {
     "ask_kind": "TEXT",
     "ask_options": "TEXT",
     "ask_raised_at": "REAL",
+    "ask_native": "INTEGER",
+    "ask_answer": "TEXT",
 }
+MAX_ANSWER = 4096
 STALE_AFTER = 300
 # Linux derives a process's start time from a wall-clock boot time, which jitters and moves
 # when the clock steps. A start this far from the recorded one means a reused pid.
@@ -74,10 +77,13 @@ def check_ask(ask):
     # An ask is the agent's claim that it needs a person; the broker never acts on it.
     if ask is None:
         return
-    if not isinstance(ask, dict) or set(ask) - {"options"} != set(ASK_FIELDS):
+    if not isinstance(ask, dict) or set(ask) - {"options", "native"} != set(ASK_FIELDS):
         raise WireError(
-            "invalid_input", "ask must be null or an object of to, text, kind, and optional options"
+            "invalid_input",
+            "ask must be null or an object of to, text, kind, and optional options and native",
         )
+    if type(ask.get("native", False)) is not bool:
+        raise WireError("invalid_input", "ask.native must be a boolean")
     bounded_text(ask["to"], "ask.to", 64)
     bounded_text(ask["text"], "ask.text", 512)
     if ask["kind"] not in ASK_KINDS:
@@ -100,6 +106,7 @@ def ask_columns(ask: dict | None, now: float) -> dict:
     return {
         **{f"ask_{key}": ask and ask[key] for key in ASK_FIELDS},
         "ask_options": ask and ask.get("options") and json.dumps(ask["options"]),
+        "ask_native": 1 if ask and ask.get("native") else None,
         "ask_raised_at": now if ask else None,
     }
 
@@ -113,9 +120,14 @@ def raised_at(new: str) -> str:
         f"CASE WHEN {new}ask_kind IS NULL THEN NULL "
         f"WHEN ask_raised_at IS NOT NULL AND ask_to IS {new}ask_to "
         f"AND ask_text IS {new}ask_text AND ask_kind IS {new}ask_kind "
-        f"AND ask_options IS {new}ask_options "
+        f"AND ask_options IS {new}ask_options AND ask_native IS {new}ask_native "
         f"THEN ask_raised_at ELSE {new}ask_raised_at END"
     )
+
+
+def kept_answer(new: str) -> str:
+    """SQL for ask_answer: an answer belongs to one raised ask and goes when that ask does."""
+    return f"CASE WHEN ({raised_at(new)}) IS ask_raised_at THEN ask_answer END"
 
 
 class Store:
@@ -364,7 +376,9 @@ class Store:
             "ON CONFLICT(agent_id) DO UPDATE SET "
             + ",".join(f"{key}=excluded.{key}" for key in row if key != "ask_raised_at")
             + ",needs_update=0,ask_raised_at="
-            + raised_at("excluded."),
+            + raised_at("excluded.")
+            + ",ask_answer="
+            + kept_answer("excluded."),
             {**row, "agent_id": agent["id"]},
         )
         return self.session(agent["id"])
@@ -377,6 +391,7 @@ class Store:
         columns = ask_columns(ask, now)
         changed = self.db.execute(
             f"UPDATE session_reports SET ask_raised_at={raised_at(':')},"
+            f"ask_answer={kept_answer(':')},"
             + "".join(f"{key}=:{key}," for key in columns if key != "ask_raised_at")
             + "last_seen=:now WHERE agent_id=:agent_id AND reported_at IS NOT NULL",
             {**columns, "now": now, "agent_id": agent["id"]},
@@ -384,6 +399,60 @@ class Store:
         if not changed and ask is not None:
             raise WireError("no_report", "Publish a report before setting an ask")
         return self.session(agent["id"])
+
+    def answer(self, session: str, raised_at: float, answer: str) -> dict:
+        """Record a person's answer to a session's open native-dialog ask.
+
+        Takes no session credential: the broker accepts it only from the local user. It lands
+        only on the ask raised at `raised_at`, so a stale answer never reaches a newer question.
+        """
+        bounded_text(answer, "answer", MAX_ANSWER)
+        if type(raised_at) not in (int, float):
+            raise WireError("invalid_input", "raised_at must be the ask's raised_at number")
+        bounded_text(session, "session", 200)
+        agent = self.resolve(session)
+        if self.db.execute(
+            "UPDATE session_reports SET ask_answer=? WHERE agent_id=? AND ask_raised_at=? "
+            "AND ask_native=1 AND ask_answer IS NULL",
+            (answer, agent["id"], raised_at),
+        ).rowcount:
+            return {"session": agent["name"], "raised_at": raised_at, "answered": True}
+        row = self.db.execute(
+            "SELECT ask_raised_at,ask_native FROM session_reports WHERE agent_id=?",
+            (agent["id"],),
+        ).fetchone()
+        if row is None or row["ask_raised_at"] != raised_at:
+            raise WireError("ask_closed", "That ask was answered, cleared, or replaced")
+        if not row["ask_native"]:
+            raise WireError(
+                "not_native", "That ask is not a dialog Agent Wire can answer; reply in the session"
+            )
+        raise WireError("already_answered", "That ask already has an answer")
+
+    def ask_poll(self, token: str, *, raised_at: float, close: bool = False) -> dict:
+        """The caller's answer to its ask raised at `raised_at`, taken once.
+
+        Taking an answer clears the ask; so does `close`. Either touches only that ask.
+        """
+        agent = self.authenticate(token)
+        if type(raised_at) not in (int, float) or type(close) is not bool:
+            raise WireError("invalid_input", "Expected a raised_at number and boolean close")
+        row = self.db.execute(
+            "SELECT ask_answer FROM session_reports WHERE agent_id=? AND ask_raised_at=?",
+            (agent["id"], raised_at),
+        ).fetchone()
+        if row is None:
+            return {"open": False, "answer": None}
+        if row["ask_answer"] is None and not close:
+            return {"open": True, "answer": None}
+        clear = ask_columns(None, self.clock())
+        self.db.execute(
+            "UPDATE session_reports SET "
+            + ",".join(f"{key}=NULL" for key in clear)
+            + ",ask_answer=NULL WHERE agent_id=? AND ask_raised_at=?",
+            (agent["id"], raised_at),
+        )
+        return {"open": False, "answer": row["ask_answer"]}
 
     def refresh_endpoint(self, token: str, endpoint: dict, cwd: str, pid=None) -> dict:
         # Only called after native validation by the broker; recheck after that async work.
@@ -453,6 +522,8 @@ class Store:
             }
             if row["ask_options"]:
                 result["report"]["ask"]["options"] = json.loads(row["ask_options"])
+            if row["ask_native"]:
+                result["report"]["ask"]["native"] = True
             result["report"]["needs_update"] = bool(row["needs_update"])
         return result
 

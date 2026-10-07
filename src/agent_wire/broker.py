@@ -39,6 +39,14 @@ class Broker:
             result = self.store.register(**{**params, "endpoint": endpoint, "pid": pid})
             self.wake.set()
             return result
+        if method == "ask_answer":
+            # A person's answer to a dialog. The private Unix socket limits callers to the local
+            # user, and no session credential is accepted, so an agent's tools can't send one.
+            if "session_handle" in params:
+                raise WireError(
+                    "forbidden", "Only a person answers an ask; credentials are refused"
+                )
+            return self.store.answer(**params)
         token = params.get("session_handle")
         rest = {k: v for k, v in params.items() if k != "session_handle"}
         if method == "sessions_list":
@@ -62,6 +70,7 @@ class Broker:
         methods = {
             "session_update": self.store.session_update,
             "session_ask": self.store.session_ask,
+            "ask_poll": self.store.ask_poll,
             "session_heartbeat": self.store.session_heartbeat,
             "message_send": self.store.send,
             "messages_read": self.store.inbox,

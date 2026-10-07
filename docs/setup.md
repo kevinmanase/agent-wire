@@ -199,6 +199,60 @@ does not trust newly added events. Existing conversations need their runtime
 to load the new MCP tool definitions; use its normal reconnect/reload controls.
 Do not clear a conversation as an installation step.
 
+### Answering Claude's question dialogs from outside the terminal (opt-in)
+
+Claude Code's question dialog (`AskUserQuestion`) and plan approval
+(`ExitPlanMode`) block the conversation until someone answers in the terminal.
+This optional PermissionRequest hook raises the dialog as the session's ask and
+waits for a person's answer through Agent Wire. Add it beside the `.*`
+heartbeat entry, which stays as it is:
+
+```json
+"PermissionRequest": [{
+  "matcher": "AskUserQuestion|ExitPlanMode",
+  "hooks": [{
+    "type": "command",
+    "command": "/absolute/path/to/agent-wire hook claude --answer",
+    "timeout": 86400
+  }]
+}]
+```
+
+- The ask carries the question as `text`, the dialog's 2 to 4 option labels as
+  `options`, and `native: true`. A plan approval asks "Approve the plan?" with
+  `Approve` and `Keep planning`. `--ask-to NAME` sets the ask's `to` (default
+  `user`).
+- Answer it as the local user, with the ask's `raised_at` from
+  `agent-wire sessions`:
+
+  ```sh
+  agent-wire answer <session> --ask-at <raised_at> -- Purple please
+  ```
+
+  For a question, any text is the answer: an option's label or free text, and
+  comma-separated labels for a multi-select question. For a plan, `Approve`
+  approves the plan as written; any other answer turns it down and passes the
+  answer to Claude as feedback, so it keeps planning.
+- Whoever answers first wins. When the terminal answers first, the hook sees
+  the dialog's result in the transcript, clears its ask, and exits. It also
+  exits when its ask is cleared or replaced, when Claude exits, or after 23
+  hours, before the 86400-second timeout.
+- The hook never decides by itself. With no answer, a broker that is down, an
+  error, or a timeout, it prints no decision and the dialog stays open in the
+  terminal.
+- Version 1 answers one-question dialogs. A dialog with several questions still
+  raises an ask listing them all, but without `native`: answer it in the
+  terminal.
+- The session needs a published report to carry the ask; without one the hook
+  steps aside.
+- After an outside plan approval, Claude Code 2.1.293 continues in accept-edits
+  mode, even when the session was in bypass permissions before plan mode. The
+  hook doesn't change modes; switch back with shift+tab if you want bypass.
+
+Tested live on Claude Code 2.1.293. `ask_answer` takes no session credential and
+is not an MCP tool, so agents' tools can't answer; see the protocol's Native
+dialogs section.
+
 The optional skill uses the same instructions for either client. From this
 repository, copy `skills/agent-wire/SKILL.md` into
 `~/.codex/skills/agent-wire/SKILL.md` and/or
