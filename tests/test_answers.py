@@ -2,6 +2,8 @@
 import asyncio
 import itertools
 import json
+import signal
+import sys
 from datetime import UTC, datetime
 
 import pytest
@@ -291,3 +293,40 @@ async def test_answer_command_sends_no_credential(monkeypatch, tmp_path):
     assert requests == [
         ("ask_answer", {"session": "lead", "raised_at": 1791.25, "answer": "-x two words"})
     ]
+
+
+def test_a_new_dialog_never_inherits_an_untaken_answer(store):
+    times = itertools.count(1000.0)
+    store.clock = lambda: next(times)
+    a, raised = asking(store)
+    store.answer("a", raised, "Approve")
+    # The same dialog again, as every plan approval is: a new ask, without the old answer.
+    again = store.session_ask(a["session_handle"], ask=ASK)["report"]["ask"]["raised_at"]
+    assert again != raised
+    assert store.ask_poll(a["session_handle"], raised_at=again) == {"open": True, "answer": None}
+    with pytest.raises(WireError):
+        store.answer("a", raised, "Approve")
+
+
+async def test_a_killed_hook_clears_its_ask_and_decides_nothing(environment):
+    state, store = environment
+    a = reporting(state, store)
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "agent_wire",
+        "--state",
+        str(state),
+        "hook",
+        "claude",
+        "--answer",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    process.stdin.write(json.dumps(payload(a)).encode())
+    process.stdin.close()
+    await raised_ask(store, a)
+    process.send_signal(signal.SIGTERM)
+    stdout, _ = await asyncio.wait_for(process.communicate(), 10)
+    assert "decision" not in stdout.decode()
+    assert store.session(a["agent"]["id"])["report"]["ask"] is None

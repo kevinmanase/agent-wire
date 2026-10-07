@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import time
 from datetime import datetime
 from pathlib import Path
@@ -251,9 +252,9 @@ class Transcript:
                 return False
             with open(self.path, "rb") as stream:
                 size = stream.seek(0, os.SEEK_END)
-                if self.offset is None:
+                if self.offset is None or size < self.offset:  # New, or rewritten.
                     # A tail read can start mid-line; that cut line just doesn't parse.
-                    self.offset = max(0, size - TRANSCRIPT_TAIL)
+                    self.offset, self.partial = max(0, size - TRANSCRIPT_TAIL), b""
                 stream.seek(self.offset)
                 data = stream.read(size - self.offset)
         except (OSError, TypeError):
@@ -306,7 +307,53 @@ async def answer_hook(
     ):
         return {}
     started = time.time()  # Before the dialog's answer: a person takes longer than this hook.
-    ask = dialog_ask(tool, tool_input, to)
+    claude, parent = ancestor("claude"), os.getppid()
+    deadline = time.monotonic() + wait
+    loop, task = asyncio.get_running_loop(), asyncio.current_task()
+    # Before the ask goes up, so a killed hook still clears it.
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        loop.add_signal_handler(sig, task.cancel)
+    token = raised = None
+    try:
+        token, raised = await raise_ask(state, native_id, dialog_ask(tool, tool_input, to))
+        if raised is None:
+            return {}
+        transcript = Transcript(payload.get("transcript_path"), tool, started)
+        while not (
+            transcript.answered()
+            or time.monotonic() > deadline
+            or os.getppid() != parent
+            or (claude is not None and not alive(claude))
+        ):
+            try:
+                result = await call(state, "ask_poll", session_handle=token, raised_at=raised)
+            except WireError as exc:
+                if exc.code not in ("broker_unavailable", "request_unknown"):
+                    return {}
+            else:
+                if result["answer"] is not None:
+                    return dialog_decision(tool, tool_input, result["answer"])
+                if not result["open"]:
+                    return {}
+            await asyncio.sleep(poll)
+        return {}
+    except asyncio.CancelledError:  # Killed: the dialog is the terminal's.
+        task.uncancel()
+        return {}
+    finally:
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            loop.remove_signal_handler(sig)
+        # However the wait ends, clear this ask, never a newer one. A taken answer
+        # already cleared it.
+        if raised is not None:
+            with contextlib.suppress(WireError):
+                await call(
+                    state, "session_ask", session_handle=token, ask=None, if_raised_at=raised
+                )
+
+
+async def raise_ask(state: Path, native_id: str, ask: dict) -> tuple[str | None, float | None]:
+    """Raise the ask on this Claude session's enrollment: its credential and raised_at."""
     for _, identity in identities(state, "claude", native_id):
         token = identity["session_handle"]
         try:
@@ -315,32 +362,7 @@ async def answer_hook(
             if exc.code == "unauthorized":
                 continue
             if exc.code == "no_report":  # Nothing to show the ask on; the terminal answers.
-                return {}
+                break
             raise
-        raised = session["report"]["ask"]["raised_at"]
-        break
-    else:
-        return {}
-    transcript = Transcript(payload.get("transcript_path"), tool, started)
-    claude = ancestor("claude")
-    deadline = time.monotonic() + wait
-    while not (
-        transcript.answered()
-        or time.monotonic() > deadline
-        or (claude is not None and not alive(claude))
-    ):
-        try:
-            result = await call(state, "ask_poll", session_handle=token, raised_at=raised)
-        except WireError as exc:
-            if exc.code not in ("broker_unavailable", "request_unknown"):
-                return {}
-        else:
-            if result["answer"] is not None:
-                return dialog_decision(tool, tool_input, result["answer"])
-            if not result["open"]:
-                return {}
-        await asyncio.sleep(poll)
-    # Answered in the terminal, or no longer waiting: clear this ask, never a newer one.
-    with contextlib.suppress(WireError):
-        await call(state, "session_ask", session_handle=token, ask=None, if_raised_at=raised)
-    return {}
+        return token, session["report"]["ask"]["raised_at"]
+    return None, None

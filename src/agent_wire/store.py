@@ -120,14 +120,16 @@ def ask_columns(ask: dict | None, now: float) -> dict:
 def raised_at(new: str) -> str:
     """SQL for ask_raised_at, given the prefix that names the ask_columns() values.
 
-    SET expressions read the previous row, so an unchanged ask keeps its raised_at.
+    SET expressions read the previous row, so an unchanged ask keeps its raised_at. A native
+    ask is a newly opened dialog each time: it always starts over, so it never inherits an
+    earlier dialog's answer.
     """
     return (
         f"CASE WHEN {new}ask_kind IS NULL THEN NULL "
         f"WHEN ask_raised_at IS NOT NULL AND ask_to IS {new}ask_to "
         f"AND ask_text IS {new}ask_text AND ask_kind IS {new}ask_kind "
-        f"AND ask_options IS {new}ask_options AND ask_native IS {new}ask_native "
-        f"THEN ask_raised_at ELSE {new}ask_raised_at END"
+        f"AND ask_options IS {new}ask_options AND {new}ask_native IS NULL "
+        f"AND ask_native IS NULL THEN ask_raised_at ELSE {new}ask_raised_at END"
     )
 
 

@@ -40,8 +40,9 @@ class Broker:
             self.wake.set()
             return result
         if method == "ask_answer":
-            # A person's answer to a dialog. The private Unix socket limits callers to the local
-            # user, and no session credential is accepted, so an agent's tools can't send one.
+            # A person's answer to a dialog. The private Unix socket admits only the local user,
+            # and a session credential is refused, so no MCP tool or peer message carries one.
+            # An agent with a shell as that user is outside this boundary, as with its terminal.
             if "session_handle" in params:
                 raise WireError(
                     "forbidden", "Only a person answers an ask; credentials are refused"
