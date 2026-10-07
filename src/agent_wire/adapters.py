@@ -2,6 +2,7 @@
 """Runtime delivery adapters. These never change a recipient's permission settings."""
 
 import asyncio
+import collections
 import json
 import os
 import stat
@@ -40,6 +41,8 @@ class CodexRPC:
     def __init__(self, endpoint: str):
         self.endpoint = endpoint
         self.counter = 0
+        # Requests and notifications from Codex that arrived while awaiting a response.
+        self.unread = collections.deque(maxlen=1000)
 
     async def __aenter__(self):
         try:
@@ -73,7 +76,7 @@ class CodexRPC:
 
     async def receive(self) -> dict:
         """The next request or notification Codex sends to this client."""
-        return json.loads(await self.ws.recv())
+        return self.unread.popleft() if self.unread else json.loads(await self.ws.recv())
 
     async def respond(self, request_id, result: dict):
         """Reply to a request Codex sent this client."""
@@ -90,7 +93,10 @@ class CodexRPC:
                 while True:
                     response = json.loads(await self.ws.recv())
                     # Server requests number their own ids; a response has no method.
-                    if response.get("id") != request_id or "method" in response:
+                    if "method" in response:
+                        self.unread.append(response)
+                        continue
+                    if response.get("id") != request_id:
                         continue
                     if "error" in response:
                         raise WireError("native_rejected", "Codex rejected the app-server request")

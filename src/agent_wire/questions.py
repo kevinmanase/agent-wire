@@ -25,16 +25,11 @@ def blocking_ask(questions: list) -> dict | None:
     """The ask for an item/tool/requestUserInput request, or None when there's nothing to show.
 
     Secret questions are answered in Codex only: they're left out, and a request with any
-    stays unanswerable here. So is a request with several questions.
+    stays unanswerable here. So is a request with several questions, or without a question id.
     """
     shown = [q for q in questions if isinstance(q, dict) and not q.get("isSecret")]
-    if not shown:
-        return None
-    ask = dialog_ask(BLOCKING, {"questions": shown}, "user")
-    if len(shown) != len(questions):
-        ask.pop("native", None)
-        ask.pop("options", None)
-    return ask
+    has_id = bool(shown) and isinstance(shown[0].get("id"), str)
+    return shown_ask(BLOCKING, shown, len(questions), has_id)
 
 
 def async_ask(questions: list) -> dict | None:
@@ -42,9 +37,20 @@ def async_ask(questions: list) -> dict | None:
     shown = [
         {"question": q.get("title"), "options": [{"label": o} for o in q.get("options") or []]}
         for q in questions
-        if isinstance(q, dict)
+        if isinstance(q, dict) and not q.get("isSecret")
     ]
-    return dialog_ask(ASYNC, {"questions": shown}, "user") if shown else None
+    return shown_ask(ASYNC, shown, len(questions), True)
+
+
+def shown_ask(tool: str, shown: list, total: int, answerable: bool) -> dict | None:
+    """dialog_ask for the questions shown; native only if it shows the request's one question."""
+    if not shown:
+        return None
+    ask = dialog_ask(tool, {"questions": shown}, "user")
+    if len(shown) != total or not answerable:
+        ask.pop("native", None)
+        ask.pop("options", None)
+    return ask
 
 
 def async_reply(item_id: str, title: str, answer: str) -> str:
@@ -89,9 +95,9 @@ class CodexQuestions:
         if old is not None:
             # Its own cleanup clears only its own ask.
             await asyncio.gather(old, return_exceptions=True)
-        path = json.loads(agent["endpoint"])["path"]
         # Any failure ends the watch with nothing sent; cleanup clears the ask.
         with contextlib.suppress(Exception):
+            path = json.loads(agent["endpoint"])["path"]
             async with asyncio.timeout(ANSWER_WAIT), CodexRPC(path) as rpc:
                 if tool == BLOCKING:
                     await self.blocking(rpc, agent, item_id)

@@ -190,7 +190,9 @@ async def run_hook(
     if event in ("SessionStart", "UserPromptSubmit"):
         return hook_context(token, session["name"], event, identity_file)
     item_id = payload.get("tool_use_id")
-    if runtime == "codex" and payload.get("tool_name") == QUESTION_EVENTS.get(event) and item_id:
+    # A tool name may carry a namespace, such as functions.request_user_input.
+    tool = str(payload.get("tool_name", "")).rpartition(".")[2]
+    if runtime == "codex" and tool == QUESTION_EVENTS.get(event) and item_id:
         # The broker raises the question's ask and relays only a person's answer. An older
         # broker without question_watch leaves the question to Codex.
         with contextlib.suppress(WireError):
@@ -198,7 +200,7 @@ async def run_hook(
                 state,
                 "question_watch",
                 session_handle=token,
-                tool=payload["tool_name"],
+                tool=tool,
                 item_id=item_id,
             )
     # Heartbeats do not emit context, block a stop, or make permission decisions.

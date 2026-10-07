@@ -38,6 +38,8 @@ class FakeCodex:
 
     def __init__(self, thread, *, status=WAITING, questions=(QUESTION,), item_id=ITEM):
         self.thread, self.status = thread, status
+        # Whether the pending request reaches a new subscriber before the resume response.
+        self.replay_first = False
         self.calls, self.replies, self.subscribers = [], [], set()
         self.request = {
             "method": "item/tool/requestUserInput",
@@ -67,10 +69,13 @@ class FakeCodex:
                     continue
                 method, params = msg["method"], msg["params"]
                 self.calls.append((method, params))
+                replay = method == "thread/resume" and self.status == WAITING
+                if replay and self.replay_first:
+                    await ws.send(json.dumps(self.request))
                 await ws.send(json.dumps({"id": msg["id"], **self.result(method, params)}))
                 if method == "thread/resume":
                     self.subscribers.add(ws)
-                    if self.status == WAITING:
+                    if replay and not self.replay_first:
                         await ws.send(json.dumps(self.request))
                 elif method == "thread/unsubscribe":
                     self.subscribers.discard(ws)
@@ -159,6 +164,27 @@ async def test_a_persons_answer_replies_to_the_waiting_request(codex):
     assert ask_of(store, a) is None
     assert fake.methods()[-1] == "thread/unsubscribe"
     assert not {"turn/start", "turn/steer"} & set(fake.methods())
+
+
+async def test_a_request_replayed_before_the_resume_response_is_kept(codex):
+    broker, store, fake, a = codex
+    fake.replay_first = True
+    await watch(broker, a)
+    ask = await raised_ask(store, a)
+    await answer(broker, a, ask, "Apple")
+    await settled(broker)
+    assert fake.replies == [{"id": 1, "result": {"answers": {"fruit": {"answers": ["Apple"]}}}}]
+
+
+async def test_a_question_without_an_id_is_answered_in_codex(codex):
+    broker, store, fake, a = codex
+    fake.request["params"]["questions"] = [{k: v for k, v in QUESTION.items() if k != "id"}]
+    await watch(broker, a)
+    ask = await raised_ask(store, a)
+    assert "native" not in ask and "options" not in ask
+    await fake.resolve()
+    await settled(broker)
+    assert fake.replies == []
 
 
 async def test_an_answer_in_codex_clears_the_ask_and_sends_nothing(codex):
@@ -326,6 +352,18 @@ async def test_an_async_answer_typed_in_codex_clears_the_ask(codex):
     assert not {"turn/start", "turn/steer", "thread/resume"} & set(fake.methods())
 
 
+async def test_a_secret_async_question_raises_no_ask(codex):
+    broker, store, fake, a = codex
+    fake.status = IDLE
+    secret = async_question()
+    secret["questions"][0]["isSecret"] = True
+    fake.turns[0]["items"] = [secret]
+    await watch(broker, a, "request_user_input_async")
+    await settled(broker)
+    assert ask_of(store, a) is None
+    assert not {"turn/start", "turn/steer", "thread/resume"} & set(fake.methods())
+
+
 async def test_an_async_question_on_an_unloaded_thread_stops(codex):
     broker, store, fake, a = codex
     fake.status = IDLE
@@ -342,6 +380,7 @@ async def test_an_async_question_on_an_unloaded_thread_stops(codex):
     "event,tool,watched",
     [
         ("PreToolUse", "request_user_input", True),
+        ("PreToolUse", "functions.request_user_input", True),
         ("PostToolUse", "request_user_input_async", True),
         ("PostToolUse", "request_user_input", False),
         ("PreToolUse", "request_user_input_async", False),
@@ -367,4 +406,5 @@ async def test_codex_hook_asks_the_broker_to_watch_its_question(
         "tool_use_id": ITEM,
     }
     assert await run_hook(state, "codex", payload) == {}
-    assert calls == ([(a["agent"]["id"], tool, ITEM)] if watched else [])
+    bare = tool.rpartition(".")[2]
+    assert calls == ([(a["agent"]["id"], bare, ITEM)] if watched else [])
