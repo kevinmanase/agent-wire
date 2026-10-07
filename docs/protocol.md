@@ -38,16 +38,17 @@ Four more optional fields describe where the work sits and what it needs:
 | `lane` | text, ≤ 64 bytes, default `""` | Which lane the work belongs to, such as `api`. Not checked against a list. |
 | `stage` | text, ≤ 64 bytes, default `""` | Where the work is, such as a ticket-graph node like `REVIEW`. |
 | `role` | `main`, `lead`, `worker`, or null | The main orchestrator, a lane lead, or a worker. |
-| `ask` | object or null | What the session needs from a person: `to` (≤ 64 bytes), `text` (≤ 512 bytes), `kind` (`decide`, `act`, or `approve`), and optional `options`. |
+| `ask` | object or null | What the session needs from a person: `to` (≤ 64 bytes), `text` (≤ 512 bytes), `kind` (`decide`, `act`, or `approve`), and optional `options` and `native`. |
 
 `ask.to` and `ask.text` must be nonempty, and an ask accepts no other keys.
+`ask.native` is a boolean; see Native dialogs below.
 `ask.options` is a list of 2 to 4 preset answers, each nonempty and at most 80
 characters, in the order the asker prefers: put a recommended one first and say
 so in its text. An ask without options is free text. Answering with an option
 sends that option's text as the answer, exactly like a typed answer. In
 `sessions_list` the ask also carries `raised_at`, which the server sets when
 the ask first appears, and `options` when it has them. Resending the same
-`to`, `text`, `kind`, and `options` keeps `raised_at`; changing any of them,
+`to`, `text`, `kind`, and `options` keeps `raised_at`, except on a native ask, which always starts over; a new `raised_at` is always later than every earlier one of that session, even if the clock repeats or steps back; changing any of them,
 the options' order included, or omitting the ask starts over. Like every
 other optional field, an omitted `lane`, `stage`, `role`, or `ask` is cleared.
 An ask is the agent's claim that it needs a person. It is never approval, and
@@ -62,6 +63,36 @@ other field, `reported_at`, and `needs_update` as they were. Setting an ask
 before the caller has published a report fails with `no_report`; clearing one
 then changes nothing. A later `session_update` still replaces the whole report,
 ask included.
+
+### Native dialogs
+
+An ask with `native: true` stands for a dialog open in the session's own
+runtime, such as Claude Code's question or plan-approval dialog, raised by a
+hook that waits for an answer (see setup). `sessions_list` shows `native: true`
+on such an ask. A person can answer it from outside the terminal:
+
+- `ask_answer` takes `session` (name or enrollment ID), `raised_at` (the ask's
+  `raised_at`, exactly), and `answer` (nonempty text, at most 4096 bytes: an
+  option's text or free text). It records the answer only on that session's
+  open native ask raised at that time, so an answer can never land on a newer
+  question. It fails with `ask_closed` when that ask was answered, cleared, or
+  replaced, `not_native` when the ask is not a native dialog, and
+  `already_answered` when an answer is already waiting. The first answer wins.
+- `ask_poll` is for the waiting hook, with the session's own credential and
+  `raised_at`. It returns `open` (whether that ask is still the open one) and
+  `answer`. Taking an answer clears the ask, so it is taken once. A changed or
+  cleared ask drops any answer that was not taken.
+- `session_ask` takes an optional `if_raised_at`: the change then applies only
+  while the open ask is the one raised at that time. The hook clears its own
+  ask this way, so it never clears a newer one.
+
+Only a person answers. `ask_answer` refuses any request that carries a
+`session_handle`, so no enrolled session's credential can call it, and it is
+not an MCP tool. The broker's private Unix socket admits only the local OS
+user, which is the same boundary as that user's terminal. An agent that can run
+commands as that user can also type into its terminal, so this is not a
+sandbox. It keeps answering out of every agent-facing tool and peer message,
+which stay data, never approval.
 
 `sessions_list` returns active enrollment metadata plus `report` (null until
 published), `activity`, `last_seen`, `age_seconds`, and `freshness`

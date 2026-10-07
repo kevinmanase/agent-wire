@@ -101,6 +101,20 @@ def parser() -> argparse.ArgumentParser:
     hook.add_argument("runtime", choices=["codex", "claude"])
     hook.add_argument("--name", help="Default is runtime plus native session ID")
     hook.add_argument("--codex-socket")
+    hook.add_argument(
+        "--answer",
+        action="store_true",
+        help="Claude PermissionRequest for AskUserQuestion|ExitPlanMode: wait for an answer",
+    )
+    hook.add_argument("--ask-to", default="user", help="Who a dialog's ask is for (--answer)")
+    answer = commands.add_parser(
+        "answer", help="Answer a session's open dialog ask, as the local user"
+    )
+    answer.add_argument("session", help="Session name or enrollment ID")
+    answer.add_argument(
+        "--ask-at", type=float, required=True, help="The ask's raised_at, from sessions"
+    )
+    answer.add_argument("text", nargs="+", help="An option label or free text, after --")
     return p
 
 
@@ -124,6 +138,13 @@ async def run(args):
         )
         path = write_identity(state, result)
         return {"agent": result["agent"], "identity_file": str(path)}
+    if args.command == "hook" and args.answer:
+        from .hooks import answer_hook
+
+        if args.runtime != "claude":
+            raise WireError("invalid_input", "--answer is for Claude Code's dialogs")
+        # Waits as long as the dialog is open; no answer leaves the dialog to the terminal.
+        return await answer_hook(state, json.load(sys.stdin), to=args.ask_to)
     if args.command == "hook":
         from .hooks import run_hook
 
@@ -151,6 +172,15 @@ async def run(args):
         )
     if args.command == "ping":
         return await call(state, "ping")
+    if args.command == "answer":
+        # No identity: an answer is a person's, sent with no session credential.
+        return await call(
+            state,
+            "ask_answer",
+            session=args.session,
+            raised_at=args.ask_at,
+            answer=" ".join(args.text),
+        )
     token = read_identity(args.identity)
     if args.command == "report":
         ask = {
@@ -266,11 +296,10 @@ def main():
     except (WireError, OSError, ValueError) as exc:
         if args.command == "hook":
             # Failed enrollment never blocks the session or changes permissions.
-            print(
-                json.dumps(
-                    {"systemMessage": "Agent Wire reporting unavailable; chat can continue."}
-                )
-            )
+            message = "Agent Wire reporting unavailable; chat can continue."
+            if args.answer:
+                message = "Agent Wire can't relay an answer to this dialog; answer it here."
+            print(json.dumps({"systemMessage": message}))
         else:
             print(
                 json.dumps({"error": {"code": getattr(exc, "code", "error"), "message": str(exc)}}),

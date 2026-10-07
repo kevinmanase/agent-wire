@@ -1,13 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
+import asyncio
+import contextlib
+import json
+import os
 import re
 import shlex
+import signal
+import time
+from datetime import datetime
 from pathlib import Path
 
 from .adapters import NativeAdapters
 from .client import call
 from .errors import WireError
 from .paths import read_identity_record, write_identity
-from .processes import ancestor
+from .processes import alive, ancestor
+from .store import ASK_TEXT, MAX_ANSWER
 
 EVENTS = {
     "SessionStart",
@@ -26,6 +34,29 @@ MODE_CLASSES = {
     "dontAsk": "prompting",
     "auto": "prompting",
 }
+DIALOGS = ("AskUserQuestion", "ExitPlanMode")
+APPROVE, KEEP_PLANNING = "Approve", "Keep planning"
+# Below the hook's configured timeout (docs: 86400), so the hook closes its own ask first.
+ANSWER_WAIT = 23 * 3600
+# How much of a long transcript to search for the dialog's tool call.
+TRANSCRIPT_TAIL = 4 * 1024 * 1024
+# Seconds the transcript may be unreadable before the hook stops waiting.
+TRANSCRIPT_GRACE = 60
+
+
+def identities(state: Path, runtime: str, native_id: str):
+    """Each private identity file enrolled for this native session, with its record."""
+    for path in (state / "identities").glob("*.json"):
+        try:
+            identity = read_identity_record(path)
+        except (WireError, ValueError, OSError):
+            continue
+        agent = identity.get("agent")
+        if isinstance(agent, dict) and (agent.get("native_id"), agent.get("runtime")) == (
+            native_id,
+            runtime,
+        ):
+            yield path, identity
 
 
 def hook_context(token: str, name: str, event: str, identity_file: Path) -> dict:
@@ -115,17 +146,7 @@ async def run_hook(
                 process = {"pid": pid}
     token, session = None, None
     identity_file = None
-    for path in (state / "identities").glob("*.json"):
-        try:
-            identity = read_identity_record(path)
-        except (WireError, ValueError, OSError):
-            continue
-        agent = identity.get("agent")
-        if not isinstance(agent, dict) or (agent.get("native_id"), agent.get("runtime")) != (
-            native_id,
-            runtime,
-        ):
-            continue
+    for path, identity in identities(state, runtime, native_id):
         try:
             if target is not None:
                 # A resumed Claude conversation can have a different inbox socket.
@@ -167,3 +188,204 @@ async def run_hook(
         return hook_context(token, session["name"], event, identity_file)
     # Heartbeats do not emit context, block a stop, or make permission decisions.
     return {}
+
+
+def dialog_ask(tool: str, tool_input: dict, to: str) -> dict:
+    """The ask a native dialog raises. Only a one-question dialog or a plan approval is native:
+    one Agent Wire can answer. A multi-question dialog lists every question but is answered
+    in the terminal."""
+    if tool == "ExitPlanMode":
+        return {
+            "to": to,
+            "text": "Approve the plan?",
+            "kind": "approve",
+            "options": [APPROVE, KEEP_PLANNING],
+            "native": True,
+        }
+    questions = [q for q in tool_input.get("questions") or [] if isinstance(q, dict)]
+    texts = [str(q.get("question") or q.get("header") or "").strip() for q in questions]
+    text = " / ".join(t for t in texts if t).encode()[:ASK_TEXT].decode(errors="ignore")
+    ask = {"to": to, "text": text.strip() or "Answer the question", "kind": "decide"}
+    if len(questions) != 1 or not isinstance(questions[0].get("question"), str):
+        return ask
+    labels = [o.get("label") for o in questions[0].get("options") or [] if isinstance(o, dict)]
+    if 2 <= len(labels) <= 4 and all(
+        isinstance(label, str) and label.strip() and len(label) <= 80 for label in labels
+    ):
+        ask["options"] = labels
+    ask["native"] = True
+    return ask
+
+
+def dialog_decision(tool: str, tool_input: dict, answer: str) -> dict:
+    """Claude's PermissionRequest output that relays a person's answer to the dialog."""
+    if tool == "ExitPlanMode":
+        # Approves the plan as given; Claude leaves plan mode for accept-edits mode.
+        decision = {"behavior": "allow", "updatedInput": tool_input}
+        if answer.strip().casefold() != APPROVE.casefold():
+            message = f"The user did not approve the plan. Their answer: {answer}"
+            decision = {"behavior": "deny", "message": message}
+    else:
+        question = tool_input["questions"][0]["question"]
+        decision = {
+            "behavior": "allow",
+            "updatedInput": {**tool_input, "answers": {question: answer}},
+        }
+    return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}
+
+
+def valid_answer(answer) -> bool:
+    return isinstance(answer, str) and bool(answer.strip()) and len(answer.encode()) <= MAX_ANSWER
+
+
+class Transcript:
+    """Watches a Claude transcript for the terminal's answer to the dialog.
+
+    Claude may write a call only together with its result, and the hook input names no
+    tool_use_id. So the terminal answered once a result for a call of the dialog's tool
+    appears, stamped after the hook started.
+    """
+
+    def __init__(self, path, tool: str, since: float):
+        self.path, self.tool, self.since = path, tool, since
+        self.offset, self.partial = None, b""
+        self.calls, self.results = set(), set()
+        self.unreadable_since = None
+
+    def lost(self) -> bool:
+        """Unreadable for longer than TRANSCRIPT_GRACE: a terminal answer would go unseen."""
+        since = self.unreadable_since
+        return since is not None and time.monotonic() - since > TRANSCRIPT_GRACE
+
+    def answered(self) -> bool:
+        try:
+            size = os.stat(self.path).st_size
+            # Claude is blocked on the dialog, so the transcript rarely grows.
+            if size == self.offset:
+                self.unreadable_since = None
+                return False
+            with open(self.path, "rb") as stream:
+                if self.offset is None or size < self.offset:  # New, or rewritten.
+                    # A tail read can start mid-line; that cut line just doesn't parse.
+                    self.offset, self.partial = max(0, size - TRANSCRIPT_TAIL), b""
+                stream.seek(self.offset)
+                data = stream.read()
+        except (OSError, TypeError):
+            if self.unreadable_since is None:
+                self.unreadable_since = time.monotonic()
+            return False
+        self.unreadable_since = None
+        self.offset += len(data)
+        lines = (self.partial + data).split(b"\n")
+        self.partial = lines.pop()
+        for line in lines:
+            self.read(line)
+        self.results &= self.calls  # A call is written no later than its result.
+        return bool(self.results)
+
+    def read(self, line: bytes):
+        if b'"tool_' not in line:
+            return
+        try:
+            entry = json.loads(line)
+            content = entry["message"]["content"]
+            stamp = datetime.fromisoformat(entry["timestamp"]).timestamp()
+        except (ValueError, KeyError, TypeError):
+            return
+        for block in content if isinstance(content, list) else ():
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and block.get("name") == self.tool:
+                self.calls.add(block.get("id"))
+            elif block.get("type") == "tool_result" and stamp >= self.since:
+                self.results.add(block.get("tool_use_id"))
+
+
+async def answer_hook(
+    state: Path, payload: dict, *, to: str = "user", wait: float = ANSWER_WAIT, poll: float = 1
+) -> dict:
+    """Raise a Claude dialog's ask and relay a person's answer to it, if one comes.
+
+    Decides nothing itself: without an answer through Agent Wire it prints no decision, and
+    the dialog stays for the terminal. It exits once the terminal answers, the ask is
+    cleared or replaced, Claude exits, or `wait` runs out, clearing its own ask.
+    """
+    if not isinstance(payload, dict):
+        raise WireError("invalid_input", "Expected hook input object")
+    tool, tool_input = payload.get("tool_name"), payload.get("tool_input")
+    native_id = payload.get("session_id")
+    if (
+        payload.get("agent_id")
+        or payload.get("hook_event_name") != "PermissionRequest"
+        or tool not in DIALOGS
+        or not isinstance(tool_input, dict)
+        or not isinstance(native_id, str)
+    ):
+        return {}
+    started = time.time()  # Before the dialog's answer: a person takes longer than this hook.
+    claude, parent = ancestor("claude"), os.getppid()
+    deadline = time.monotonic() + wait
+    loop, task = asyncio.get_running_loop(), asyncio.current_task()
+    # Before the ask goes up, so a killed hook still clears it.
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        loop.add_signal_handler(sig, task.cancel)
+    token = raised = None
+    try:
+        token, raised = await raise_ask(state, native_id, dialog_ask(tool, tool_input, to))
+        if raised is None:
+            return {}
+        transcript = Transcript(payload.get("transcript_path"), tool, started)
+
+        def over() -> bool:
+            return (
+                transcript.answered()
+                or transcript.lost()
+                or time.monotonic() > deadline
+                or os.getppid() != parent
+                or (claude is not None and not alive(claude))
+            )
+
+        while not over():
+            try:
+                result = await call(state, "ask_poll", session_handle=token, raised_at=raised)
+            except WireError as exc:
+                if exc.code not in ("broker_unavailable", "request_unknown"):
+                    return {}
+            else:
+                answer = result["answer"]
+                # Checked again: the terminal may have answered while the poll was out.
+                if valid_answer(answer) and not over():
+                    return dialog_decision(tool, tool_input, answer)
+                if not result["open"]:
+                    return {}
+            await asyncio.sleep(poll)
+        return {}
+    except asyncio.CancelledError:  # Killed: the dialog is the terminal's.
+        task.uncancel()
+        return {}
+    finally:
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            loop.remove_signal_handler(sig)
+        # However the wait ends, clear this ask, never a newer one. A taken answer
+        # already cleared it.
+        if raised is not None:
+            with contextlib.suppress(WireError):
+                await call(
+                    state, "session_ask", session_handle=token, ask=None, if_raised_at=raised
+                )
+
+
+async def raise_ask(state: Path, native_id: str, ask: dict) -> tuple[str | None, float | None]:
+    """Raise the ask on this Claude session's enrollment: its credential and raised_at."""
+    for _, identity in identities(state, "claude", native_id):
+        token = identity["session_handle"]
+        try:
+            session = await call(state, "session_ask", session_handle=token, ask=ask)
+        except WireError as exc:
+            if exc.code == "unauthorized":
+                continue
+            if exc.code == "no_report":  # Nothing to show the ask on; the terminal answers.
+                break
+            raise
+        return token, session["report"]["ask"]["raised_at"]
+    return None, None

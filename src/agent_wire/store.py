@@ -32,6 +32,7 @@ REPORT_TEXT = {
     "stage": 64,
 }
 ASK_FIELDS = ("to", "text", "kind")
+ASK_TEXT = 512
 # Preset answers an ask may carry, in the asker's order.
 REPORT_COLUMNS = {
     "lane": "TEXT NOT NULL DEFAULT ''",
@@ -42,7 +43,12 @@ REPORT_COLUMNS = {
     "ask_kind": "TEXT",
     "ask_options": "TEXT",
     "ask_raised_at": "REAL",
+    "ask_native": "INTEGER",
+    "ask_answer": "TEXT",
+    # The latest raised_at this session's asks ever had; a new ask's is always later.
+    "ask_last_raised": "REAL",
 }
+MAX_ANSWER = 4096
 STALE_AFTER = 300
 # Linux derives a process's start time from a wall-clock boot time, which jitters and moves
 # when the clock steps. A start this far from the recorded one means a reused pid.
@@ -74,12 +80,15 @@ def check_ask(ask):
     # An ask is the agent's claim that it needs a person; the broker never acts on it.
     if ask is None:
         return
-    if not isinstance(ask, dict) or set(ask) - {"options"} != set(ASK_FIELDS):
+    if not isinstance(ask, dict) or set(ask) - {"options", "native"} != set(ASK_FIELDS):
         raise WireError(
-            "invalid_input", "ask must be null or an object of to, text, kind, and optional options"
+            "invalid_input",
+            "ask must be null or an object of to, text, kind, and optional options and native",
         )
+    if type(ask.get("native", False)) is not bool:
+        raise WireError("invalid_input", "ask.native must be a boolean")
     bounded_text(ask["to"], "ask.to", 64)
-    bounded_text(ask["text"], "ask.text", 512)
+    bounded_text(ask["text"], "ask.text", ASK_TEXT)
     if ask["kind"] not in ASK_KINDS:
         raise WireError("invalid_input", f"ask.kind must be one of {ASK_KINDS}")
     # Preset answers in the asker's order, limited in characters as the shared contract says.
@@ -95,11 +104,17 @@ def check_ask(ask):
             )
 
 
+def check_raised_at(value):
+    if type(value) not in (int, float):
+        raise WireError("invalid_input", "raised_at must be the ask's raised_at number")
+
+
 def ask_columns(ask: dict | None, now: float) -> dict:
     """The ask's column values, under the names raised_at() reads."""
     return {
         **{f"ask_{key}": ask and ask[key] for key in ASK_FIELDS},
         "ask_options": ask and ask.get("options") and json.dumps(ask["options"]),
+        "ask_native": 1 if ask and ask.get("native") else None,
         "ask_raised_at": now if ask else None,
     }
 
@@ -107,15 +122,30 @@ def ask_columns(ask: dict | None, now: float) -> dict:
 def raised_at(new: str) -> str:
     """SQL for ask_raised_at, given the prefix that names the ask_columns() values.
 
-    SET expressions read the previous row, so an unchanged ask keeps its raised_at.
+    SET expressions read the previous row, so an unchanged ask keeps its raised_at. A native
+    ask is a newly opened dialog each time: it always starts over, so it never inherits an
+    earlier dialog's answer. A new ask's raised_at is later than every earlier one of the
+    session, even if the clock repeats or steps back, so an answer matched on it can't
+    reach another ask.
     """
     return (
         f"CASE WHEN {new}ask_kind IS NULL THEN NULL "
         f"WHEN ask_raised_at IS NOT NULL AND ask_to IS {new}ask_to "
         f"AND ask_text IS {new}ask_text AND ask_kind IS {new}ask_kind "
-        f"AND ask_options IS {new}ask_options "
-        f"THEN ask_raised_at ELSE {new}ask_raised_at END"
+        f"AND ask_options IS {new}ask_options AND {new}ask_native IS NULL "
+        f"AND ask_native IS NULL THEN ask_raised_at "
+        f"ELSE MAX({new}ask_raised_at, COALESCE(ask_last_raised, ask_raised_at, 0) + 1e-6) END"
     )
+
+
+def last_raised(new: str) -> str:
+    """SQL for ask_last_raised: the new raised_at, or the previous latest when cleared."""
+    return f"COALESCE(({raised_at(new)}), ask_last_raised)"
+
+
+def kept_answer(new: str) -> str:
+    """SQL for ask_answer: an answer belongs to one raised ask and goes when that ask does."""
+    return f"CASE WHEN ({raised_at(new)}) IS ask_raised_at THEN ask_answer END"
 
 
 class Store:
@@ -358,32 +388,93 @@ class Store:
             "reported_at": now,
             "last_seen": now,
         }
+        row["ask_last_raised"] = row["ask_raised_at"]
+        derived = {"ask_raised_at", "ask_last_raised"}
         self.db.execute(
             f"INSERT INTO session_reports (agent_id,{','.join(row)},needs_update) "
             f"VALUES (:agent_id,{','.join(':' + key for key in row)},0) "
             "ON CONFLICT(agent_id) DO UPDATE SET "
-            + ",".join(f"{key}=excluded.{key}" for key in row if key != "ask_raised_at")
+            + ",".join(f"{key}=excluded.{key}" for key in row if key not in derived)
             + ",needs_update=0,ask_raised_at="
-            + raised_at("excluded."),
+            + raised_at("excluded.")
+            + ",ask_last_raised="
+            + last_raised("excluded.")
+            + ",ask_answer="
+            + kept_answer("excluded."),
             {**row, "agent_id": agent["id"]},
         )
         return self.session(agent["id"])
 
-    def session_ask(self, token: str, *, ask: dict | None) -> dict:
-        """Set or clear (null) only the caller's ask; the rest of its report stays."""
+    def session_ask(
+        self, token: str, *, ask: dict | None, if_raised_at: float | None = None
+    ) -> dict:
+        """Set or clear (null) only the caller's ask; the rest of its report stays.
+
+        With `if_raised_at`, only while the open ask is the one raised then.
+        """
         agent = self.authenticate(token)
         check_ask(ask)
+        if if_raised_at is not None:
+            check_raised_at(if_raised_at)
         now = self.clock()
         columns = ask_columns(ask, now)
         changed = self.db.execute(
             f"UPDATE session_reports SET ask_raised_at={raised_at(':')},"
+            f"ask_last_raised={last_raised(':')},ask_answer={kept_answer(':')},"
             + "".join(f"{key}=:{key}," for key in columns if key != "ask_raised_at")
-            + "last_seen=:now WHERE agent_id=:agent_id AND reported_at IS NOT NULL",
-            {**columns, "now": now, "agent_id": agent["id"]},
+            + "last_seen=:now WHERE agent_id=:agent_id AND reported_at IS NOT NULL"
+            + (" AND ask_raised_at=:if_raised_at" if if_raised_at is not None else ""),
+            {**columns, "now": now, "agent_id": agent["id"], "if_raised_at": if_raised_at},
         ).rowcount
-        if not changed and ask is not None:
+        if not changed and ask is not None and if_raised_at is None:
             raise WireError("no_report", "Publish a report before setting an ask")
         return self.session(agent["id"])
+
+    def answer(self, session: str, raised_at: float, answer: str) -> dict:
+        """Record a person's answer to a session's open native-dialog ask.
+
+        Takes no session credential: the broker accepts it only from the local user. It lands
+        only on the ask raised at `raised_at`, so a stale answer never reaches a newer question.
+        """
+        bounded_text(answer, "answer", MAX_ANSWER)
+        check_raised_at(raised_at)
+        bounded_text(session, "session", 200)
+        agent = self.resolve(session)
+        if self.db.execute(
+            "UPDATE session_reports SET ask_answer=? WHERE agent_id=? AND ask_raised_at=? "
+            "AND ask_native=1 AND ask_answer IS NULL",
+            (answer, agent["id"], raised_at),
+        ).rowcount:
+            return {"session": agent["name"], "raised_at": raised_at, "answered": True}
+        row = self.db.execute(
+            "SELECT ask_raised_at,ask_native FROM session_reports WHERE agent_id=?",
+            (agent["id"],),
+        ).fetchone()
+        if row is None or row["ask_raised_at"] != raised_at:
+            raise WireError("ask_closed", "That ask was answered, cleared, or replaced")
+        if not row["ask_native"]:
+            raise WireError(
+                "not_native", "That ask is not a dialog Agent Wire can answer; reply in the session"
+            )
+        raise WireError("already_answered", "That ask already has an answer")
+
+    def ask_poll(self, token: str, *, raised_at: float) -> dict:
+        """Whether the caller's ask raised at `raised_at` is open, and its answer, taken once.
+
+        Taking an answer clears that ask.
+        """
+        agent = self.authenticate(token)
+        check_raised_at(raised_at)
+        row = self.db.execute(
+            "SELECT ask_answer FROM session_reports WHERE agent_id=? AND ask_raised_at=?",
+            (agent["id"], raised_at),
+        ).fetchone()
+        if row is None:
+            return {"open": False, "answer": None}
+        if row["ask_answer"] is None:
+            return {"open": True, "answer": None}
+        self.session_ask(token, ask=None, if_raised_at=raised_at)
+        return {"open": False, "answer": row["ask_answer"]}
 
     def refresh_endpoint(self, token: str, endpoint: dict, cwd: str, pid=None) -> dict:
         # Only called after native validation by the broker; recheck after that async work.
@@ -453,6 +544,8 @@ class Store:
             }
             if row["ask_options"]:
                 result["report"]["ask"]["options"] = json.loads(row["ask_options"])
+            if row["ask_native"]:
+                result["report"]["ask"]["native"] = True
             result["report"]["needs_update"] = bool(row["needs_update"])
         return result
 

@@ -39,6 +39,15 @@ class Broker:
             result = self.store.register(**{**params, "endpoint": endpoint, "pid": pid})
             self.wake.set()
             return result
+        if method == "ask_answer":
+            # A person's answer to a dialog. The private Unix socket admits only the local user,
+            # and a session credential is refused, so no MCP tool or peer message carries one.
+            # An agent with a shell as that user is outside this boundary, as with its terminal.
+            if "session_handle" in params:
+                raise WireError(
+                    "forbidden", "Only a person answers an ask; credentials are refused"
+                )
+            return self.store.answer(**params)
         token = params.get("session_handle")
         rest = {k: v for k, v in params.items() if k != "session_handle"}
         if method == "sessions_list":
@@ -55,6 +64,9 @@ class Broker:
             )
             pid = endpoint.pop("pid", rest.get("pid"))
             return self.store.refresh_endpoint(token, endpoint, rest["cwd"], pid)
+        if method == "ask_poll":
+            # A dialog hook polls this every second; it has nothing for the delivery worker.
+            return self.store.ask_poll(token, **rest)
         if method == "agents_list":
             if rest:
                 raise WireError("invalid_input", "agents_list accepts only a session credential")

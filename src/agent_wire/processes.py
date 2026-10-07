@@ -19,20 +19,24 @@ def ps(*args: str) -> str:
     ).stdout
 
 
+def alive(pid: int) -> bool:
+    """Whether the process exists, including another user's."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # It exists, but as another user's process.
+    return True
+
+
 def process_starts(pids) -> dict[int, float | None]:
     """Map each running process to its start time in epoch seconds, or None when unreadable.
 
     A process that no longer exists is left out.
     """
-    starts = {}
-    for pid in set(pids):
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            continue
-        except PermissionError:
-            pass  # It exists, but as another user's process; its start time tells.
-        starts[pid] = None
+    # Another user's process exists too; its start time tells.
+    starts = {pid: None for pid in set(pids) if alive(pid)}
     if starts:
         try:
             output = ps("-o", "pid=", "-o", "lstart=", "-p", ",".join(map(str, starts)))

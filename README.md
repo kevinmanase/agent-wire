@@ -213,6 +213,11 @@ that time while the same ask stays. An ask is a claim, never approval.
 the whole report, ask included. The table shows lane, stage, and a short ask
 column when any entry has them.
 
+An opt-in Claude hook raises Claude Code's question and plan-approval dialogs
+as native asks, so a person can answer them from outside the terminal with
+`agent-wire answer <session> --ask-at <raised_at> -- <answer>`. See
+[setup](docs/setup.md#answering-claudes-question-dialogs-from-outside-the-terminal-opt-in).
+
 Write `ticket` so a floor can group every report on the same work: the Linear
 issue key, such as `ENG-2649`, or `<repo>#<number>` for the GitHub issue, such
 as `team-floor#11`, or for the pull request when there is no issue, such as
