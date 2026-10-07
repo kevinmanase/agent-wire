@@ -45,6 +45,8 @@ REPORT_COLUMNS = {
     "ask_raised_at": "REAL",
     "ask_native": "INTEGER",
     "ask_answer": "TEXT",
+    # The latest raised_at this session's asks ever had; a new ask's is always later.
+    "ask_last_raised": "REAL",
 }
 MAX_ANSWER = 4096
 STALE_AFTER = 300
@@ -122,15 +124,23 @@ def raised_at(new: str) -> str:
 
     SET expressions read the previous row, so an unchanged ask keeps its raised_at. A native
     ask is a newly opened dialog each time: it always starts over, so it never inherits an
-    earlier dialog's answer.
+    earlier dialog's answer. A new ask's raised_at is later than every earlier one of the
+    session, even if the clock repeats or steps back, so an answer matched on it can't
+    reach another ask.
     """
     return (
         f"CASE WHEN {new}ask_kind IS NULL THEN NULL "
         f"WHEN ask_raised_at IS NOT NULL AND ask_to IS {new}ask_to "
         f"AND ask_text IS {new}ask_text AND ask_kind IS {new}ask_kind "
         f"AND ask_options IS {new}ask_options AND {new}ask_native IS NULL "
-        f"AND ask_native IS NULL THEN ask_raised_at ELSE {new}ask_raised_at END"
+        f"AND ask_native IS NULL THEN ask_raised_at "
+        f"ELSE MAX({new}ask_raised_at, COALESCE(ask_last_raised, ask_raised_at, 0) + 1e-6) END"
     )
+
+
+def last_raised(new: str) -> str:
+    """SQL for ask_last_raised: the new raised_at, or the previous latest when cleared."""
+    return f"COALESCE(({raised_at(new)}), ask_last_raised)"
 
 
 def kept_answer(new: str) -> str:
@@ -378,13 +388,17 @@ class Store:
             "reported_at": now,
             "last_seen": now,
         }
+        row["ask_last_raised"] = row["ask_raised_at"]
+        derived = {"ask_raised_at", "ask_last_raised"}
         self.db.execute(
             f"INSERT INTO session_reports (agent_id,{','.join(row)},needs_update) "
             f"VALUES (:agent_id,{','.join(':' + key for key in row)},0) "
             "ON CONFLICT(agent_id) DO UPDATE SET "
-            + ",".join(f"{key}=excluded.{key}" for key in row if key != "ask_raised_at")
+            + ",".join(f"{key}=excluded.{key}" for key in row if key not in derived)
             + ",needs_update=0,ask_raised_at="
             + raised_at("excluded.")
+            + ",ask_last_raised="
+            + last_raised("excluded.")
             + ",ask_answer="
             + kept_answer("excluded."),
             {**row, "agent_id": agent["id"]},
@@ -406,7 +420,7 @@ class Store:
         columns = ask_columns(ask, now)
         changed = self.db.execute(
             f"UPDATE session_reports SET ask_raised_at={raised_at(':')},"
-            f"ask_answer={kept_answer(':')},"
+            f"ask_last_raised={last_raised(':')},ask_answer={kept_answer(':')},"
             + "".join(f"{key}=:{key}," for key in columns if key != "ask_raised_at")
             + "last_seen=:now WHERE agent_id=:agent_id AND reported_at IS NOT NULL"
             + (" AND ask_raised_at=:if_raised_at" if if_raised_at is not None else ""),

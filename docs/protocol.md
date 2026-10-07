@@ -48,7 +48,7 @@ so in its text. An ask without options is free text. Answering with an option
 sends that option's text as the answer, exactly like a typed answer. In
 `sessions_list` the ask also carries `raised_at`, which the server sets when
 the ask first appears, and `options` when it has them. Resending the same
-`to`, `text`, `kind`, and `options` keeps `raised_at`, except on a native ask, which always starts over; changing any of them,
+`to`, `text`, `kind`, and `options` keeps `raised_at`, except on a native ask, which always starts over; a new `raised_at` is always later than every earlier one of that session, even if the clock repeats or steps back; changing any of them,
 the options' order included, or omitting the ask starts over. Like every
 other optional field, an omitted `lane`, `stage`, `role`, or `ask` is cleared.
 An ask is the agent's claim that it needs a person. It is never approval, and

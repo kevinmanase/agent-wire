@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import pytest
 
 from agent_wire import cli as cli_module
+from agent_wire import hooks as hooks_module
 from agent_wire.client import call
 from agent_wire.errors import WireError
 from agent_wire.hooks import answer_hook
@@ -329,4 +330,71 @@ async def test_a_killed_hook_clears_its_ask_and_decides_nothing(environment):
     process.send_signal(signal.SIGTERM)
     stdout, _ = await asyncio.wait_for(process.communicate(), 10)
     assert "decision" not in stdout.decode()
+    assert store.session(a["agent"]["id"])["report"]["ask"] is None
+
+
+def test_raised_at_always_moves_forward_even_on_a_stuck_clock(store):
+    store.clock = lambda: 1000.0
+    a, first = asking(store)
+    store.answer("a", first, "Approve")
+    store.session_ask(a["session_handle"], ask=None)
+    # Plan A's answer waits on its own raised_at; plan B, raised at the same clock time, can't
+    # take it, nor can a full report that raises the dialog again.
+    second = store.session_ask(a["session_handle"], ask=ASK)["report"]["ask"]["raised_at"]
+    third = store.session_update(a["session_handle"], task="T", status="waiting", ask=ASK)
+    third = third["report"]["ask"]["raised_at"]
+    assert first < second < third
+    assert store.ask_poll(a["session_handle"], raised_at=third) == {"open": True, "answer": None}
+    with pytest.raises(WireError):
+        store.answer("a", first, "Approve")
+
+
+def fake_poll(monkeypatch, *replies, delay=0, during=None):
+    """Answer ask_poll with each reply in turn, after `delay`, running `during` meanwhile."""
+    replies = iter(replies)
+
+    async def fake_call(state, method, **params):
+        if method != "ask_poll":
+            return await call(state, method, **params)
+        if during:
+            during()
+        await asyncio.sleep(delay)
+        return next(replies, {"open": False, "answer": None})
+
+    monkeypatch.setattr(hooks_module, "call", fake_call)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [False, {}, "", "  ", ["Red"], "x" * 4097],
+    ids=["false", "object", "empty", "blank", "list", "too-long"],
+)
+async def test_hook_relays_only_a_real_answer(environment, monkeypatch, bad):
+    state, store = environment
+    a = reporting(state, store)
+    fake_poll(monkeypatch, {"open": True, "answer": bad})
+    assert await asyncio.wait_for(answer_hook(state, payload(a), poll=0.01), 5) == {}
+
+
+async def test_an_answer_after_the_terminal_won_is_not_relayed(environment, monkeypatch):
+    state, store = environment
+    a = reporting(state, store)
+
+    def terminal_answers():
+        with a["transcript"].open("a") as stream:
+            stream.write(use("toolu_1") + result("toolu_1"))
+
+    fake_poll(monkeypatch, {"open": False, "answer": "Red"}, delay=0.05, during=terminal_answers)
+    assert await asyncio.wait_for(answer_hook(state, payload(a), poll=0.01), 5) == {}
+    # Past the deadline when the poll returns: no decision either.
+    fake_poll(monkeypatch, {"open": False, "answer": "Red"}, delay=0.05)
+    assert await asyncio.wait_for(answer_hook(state, payload(a), wait=0.01, poll=0.01), 5) == {}
+
+
+async def test_hook_stops_when_the_transcript_stays_unreadable(environment, monkeypatch):
+    state, store = environment
+    a = reporting(state, store)
+    monkeypatch.setattr(hooks_module, "TRANSCRIPT_GRACE", 0.05)
+    hook_input = payload(a, transcript=state / "missing.jsonl")
+    assert await asyncio.wait_for(answer_hook(state, hook_input, poll=0.01), 5) == {}
     assert store.session(a["agent"]["id"])["report"]["ask"] is None

@@ -15,7 +15,7 @@ from .client import call
 from .errors import WireError
 from .paths import read_identity_record, write_identity
 from .processes import alive, ancestor
-from .store import ASK_TEXT
+from .store import ASK_TEXT, MAX_ANSWER
 
 EVENTS = {
     "SessionStart",
@@ -40,6 +40,8 @@ APPROVE, KEEP_PLANNING = "Approve", "Keep planning"
 ANSWER_WAIT = 23 * 3600
 # How much of a long transcript to search for the dialog's tool call.
 TRANSCRIPT_TAIL = 4 * 1024 * 1024
+# Seconds the transcript may be unreadable before the hook stops waiting.
+TRANSCRIPT_GRACE = 60
 
 
 def identities(state: Path, runtime: str, native_id: str):
@@ -232,6 +234,10 @@ def dialog_decision(tool: str, tool_input: dict, answer: str) -> dict:
     return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}
 
 
+def valid_answer(answer) -> bool:
+    return isinstance(answer, str) and bool(answer.strip()) and len(answer.encode()) <= MAX_ANSWER
+
+
 class Transcript:
     """Watches a Claude transcript for the terminal's answer to the dialog.
 
@@ -244,21 +250,31 @@ class Transcript:
         self.path, self.tool, self.since = path, tool, since
         self.offset, self.partial = None, b""
         self.calls, self.results = set(), set()
+        self.unreadable_since = None
+
+    def lost(self) -> bool:
+        """Unreadable for longer than TRANSCRIPT_GRACE: a terminal answer would go unseen."""
+        since = self.unreadable_since
+        return since is not None and time.monotonic() - since > TRANSCRIPT_GRACE
 
     def answered(self) -> bool:
         try:
+            size = os.stat(self.path).st_size
             # Claude is blocked on the dialog, so the transcript rarely grows.
-            if os.stat(self.path).st_size == self.offset:
+            if size == self.offset:
+                self.unreadable_since = None
                 return False
             with open(self.path, "rb") as stream:
-                size = stream.seek(0, os.SEEK_END)
                 if self.offset is None or size < self.offset:  # New, or rewritten.
                     # A tail read can start mid-line; that cut line just doesn't parse.
                     self.offset, self.partial = max(0, size - TRANSCRIPT_TAIL), b""
                 stream.seek(self.offset)
-                data = stream.read(size - self.offset)
+                data = stream.read()
         except (OSError, TypeError):
+            if self.unreadable_since is None:
+                self.unreadable_since = time.monotonic()
             return False
+        self.unreadable_since = None
         self.offset += len(data)
         lines = (self.partial + data).split(b"\n")
         self.partial = lines.pop()
@@ -319,20 +335,27 @@ async def answer_hook(
         if raised is None:
             return {}
         transcript = Transcript(payload.get("transcript_path"), tool, started)
-        while not (
-            transcript.answered()
-            or time.monotonic() > deadline
-            or os.getppid() != parent
-            or (claude is not None and not alive(claude))
-        ):
+
+        def over() -> bool:
+            return (
+                transcript.answered()
+                or transcript.lost()
+                or time.monotonic() > deadline
+                or os.getppid() != parent
+                or (claude is not None and not alive(claude))
+            )
+
+        while not over():
             try:
                 result = await call(state, "ask_poll", session_handle=token, raised_at=raised)
             except WireError as exc:
                 if exc.code not in ("broker_unavailable", "request_unknown"):
                     return {}
             else:
-                if result["answer"] is not None:
-                    return dialog_decision(tool, tool_input, result["answer"])
+                answer = result["answer"]
+                # Checked again: the terminal may have answered while the poll was out.
+                if valid_answer(answer) and not over():
+                    return dialog_decision(tool, tool_input, answer)
                 if not result["open"]:
                     return {}
             await asyncio.sleep(poll)

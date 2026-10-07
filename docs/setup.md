@@ -235,11 +235,14 @@ heartbeat entry, which stays as it is:
   answer to Claude as feedback, so it keeps planning.
 - Whoever answers first wins. When the terminal answers first, the hook sees
   the dialog's result in the transcript, clears its ask, and exits. It also
-  exits when its ask is cleared or replaced, when Claude exits, or after 23
-  hours, before the 86400-second timeout.
-- The hook never decides by itself. With no answer, a broker that is down, an
-  error, or a timeout, it prints no decision and the dialog stays open in the
-  terminal.
+  exits when its ask is cleared or replaced, when Claude or its parent process
+  exits, when it is sent SIGTERM or SIGHUP, when the transcript stays
+  unreadable for 60 seconds, or after 23 hours, before the 86400-second
+  timeout. An answer that arrives after the terminal answered, or after the
+  hook stopped waiting, is not relayed.
+- The hook never decides by itself. With no answer, a malformed answer, a
+  broker that is down, an error, or a timeout, it prints no decision and the
+  dialog stays open in the terminal.
 - Version 1 answers one-question dialogs. A dialog with several questions still
   raises an ask listing them all, but without `native`: answer it in the
   terminal.
