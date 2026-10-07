@@ -71,6 +71,14 @@ class CodexRPC:
     async def __aexit__(self, *args):
         await self.ws.close()
 
+    async def receive(self) -> dict:
+        """The next request or notification Codex sends to this client."""
+        return json.loads(await self.ws.recv())
+
+    async def respond(self, request_id, result: dict):
+        """Reply to a request Codex sent this client."""
+        await self.ws.send(json.dumps({"id": request_id, "result": result}))
+
     async def request(self, method: str, params: dict, *, delivery=False):
         self.counter += 1
         request_id = self.counter

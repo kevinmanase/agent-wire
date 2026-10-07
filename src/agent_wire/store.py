@@ -463,9 +463,9 @@ class Store:
 
     def clear_codex_dialogs(self):
         """Clear Codex dialog asks. The broker that watched them is gone, so none is answerable."""
+        cleared = "".join(f"{key}=NULL," for key in ask_columns(None, 0))
         self.db.execute(
-            "UPDATE session_reports SET ask_to=NULL,ask_text=NULL,ask_kind=NULL,ask_options=NULL,"
-            "ask_native=NULL,ask_answer=NULL,ask_raised_at=NULL WHERE ask_native=1 AND agent_id "
+            f"UPDATE session_reports SET {cleared}ask_answer=NULL WHERE ask_native=1 AND agent_id "
             "IN (SELECT id FROM agents WHERE runtime='codex')"
         )
 

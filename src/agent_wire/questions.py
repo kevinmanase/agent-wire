@@ -72,9 +72,12 @@ class CodexQuestions:
             old.cancel()
         task = asyncio.create_task(self.run(agent, tool, item_id, old))
         self.tasks[agent["id"]] = task
-        task.add_done_callback(
-            lambda done: self.tasks.get(agent["id"]) is done and self.tasks.pop(agent["id"])
-        )
+
+        def forget(done: asyncio.Task):
+            if self.tasks.get(agent["id"]) is done:
+                del self.tasks[agent["id"]]
+
+        task.add_done_callback(forget)
 
     async def close(self):
         tasks = list(self.tasks.values())
@@ -121,7 +124,7 @@ class CodexQuestions:
         try:
             async with asyncio.timeout(APPEAR_WAIT):
                 while True:
-                    request = json.loads(await rpc.ws.recv())
+                    request = await rpc.receive()
                     params = request.get("params") or {}
                     if (
                         request.get("method") == "item/tool/requestUserInput"
@@ -147,7 +150,7 @@ class CodexQuestions:
         thread = agent["native_id"]
         while True:
             try:
-                message = json.loads(await asyncio.wait_for(rpc.ws.recv(), POLL))
+                message = await asyncio.wait_for(rpc.receive(), POLL)
             except TimeoutError:
                 message = {}
             params = message.get("params") or {}
@@ -160,7 +163,7 @@ class CodexQuestions:
             taken = self.store.take_answer(agent["id"], raised)
             if valid_answer(taken["answer"]) and isinstance(question_id, str):
                 answers = {question_id: {"answers": [taken["answer"]]}}
-                await rpc.ws.send(json.dumps({"id": request_id, "result": {"answers": answers}}))
+                await rpc.respond(request_id, {"answers": answers})
                 return
             if not taken["open"]:
                 return
@@ -193,33 +196,36 @@ class CodexQuestions:
         finally:
             self.store.set_ask(agent["id"], None, if_raised_at=raised)
 
+    async def items(self, rpc, thread: str, turns: int) -> list[dict]:
+        """Every item of the latest turns, in full."""
+        params = {"threadId": thread, "limit": turns, "itemsView": "full"}
+        data = (await rpc.request("thread/turns/list", params))["data"]
+        return [item for turn in data for item in turn.get("items") or ()]
+
     async def async_item(self, rpc, thread: str, item_id: str) -> dict | None:
-        params = {"threadId": thread, "limit": 1, "itemsView": "full"}
-        for turn in (await rpc.request("thread/turns/list", params))["data"]:
-            for item in turn.get("items") or ():
-                if (
-                    item.get("type") == "agentMessage"
-                    and item.get("id") == item_id
-                    and item.get("delivery") == "async"
-                ):
-                    return item
-        return None
+        return next(
+            (
+                item
+                for item in await self.items(rpc, thread, 1)
+                if item.get("type") == "agentMessage"
+                and item.get("id") == item_id
+                and item.get("delivery") == "async"
+            ),
+            None,
+        )
 
     async def replied(self, rpc, thread: str, item_id: str) -> bool:
         """Whether Codex's own UI answered the question, or the thread is no longer loaded."""
         if (await self.status(rpc, thread)).get("type") in (None, "notLoaded"):
             return True
         # Full items: a reply steered into a running turn isn't in a turn's summary.
-        params = {"threadId": thread, "limit": 2, "itemsView": "full"}
-        for turn in (await rpc.request("thread/turns/list", params))["data"]:
-            for item in turn.get("items") or ():
-                if item.get("type") == "userMessage" and any(
-                    REPLY_TAG in text and item_id in text
-                    for part in item.get("content") or ()
-                    if isinstance(text := part.get("text"), str)
-                ):
-                    return True
-        return False
+        return any(
+            REPLY_TAG in text and item_id in text
+            for item in await self.items(rpc, thread, 2)
+            if item.get("type") == "userMessage"
+            for part in item.get("content") or ()
+            if isinstance(text := part.get("text"), str)
+        )
 
     async def send_reply(self, rpc, thread: str, text: str):
         """Send an async answer: into the running turn, or as a new turn when idle."""

@@ -9,9 +9,10 @@ from pathlib import Path
 
 from .adapters import NativeAdapters
 from .errors import DeliveryUnknown, Offline, WireError
+from .hooks import QUESTION_EVENTS
 from .paths import MAX_FRAME, private_directory
 from .permissions import sender_mode
-from .questions import ASYNC, BLOCKING, CodexQuestions
+from .questions import CodexQuestions
 from .store import Store, bounded_text
 
 
@@ -74,7 +75,7 @@ class Broker:
         if method == "question_watch":
             # A Codex session's hook says its question tool is running. The broker raises the
             # ask from Codex's own request; it never answers without a person (ask_answer).
-            if set(rest) != {"tool", "item_id"} or rest["tool"] not in (BLOCKING, ASYNC):
+            if set(rest) != {"tool", "item_id"} or rest["tool"] not in QUESTION_EVENTS.values():
                 raise WireError("invalid_input", "question_watch needs a question tool and item_id")
             if agent["runtime"] != "codex":
                 raise WireError("invalid_runtime", "Only Codex questions are watched")

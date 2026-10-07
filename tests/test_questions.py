@@ -9,13 +9,15 @@ import pytest
 from websockets.asyncio.server import unix_serve
 
 from agent_wire import questions as questions_module
-from agent_wire.adapters import CodexRPC
 from agent_wire.broker import Broker
 from agent_wire.errors import WireError
 from agent_wire.hooks import run_hook
 from agent_wire.paths import write_identity
 from agent_wire.questions import REPLY_TAG, async_reply
 from agent_wire.store import Store
+
+from .test_answers import raised_ask
+from .test_store import enroll
 
 ITEM = "call_1"
 QUESTION = {
@@ -136,14 +138,6 @@ def ask_of(store, a):
     return store.session(a["agent"]["id"])["report"]["ask"]
 
 
-async def eventually(check):
-    for _ in range(500):
-        if value := check():
-            return value
-        await asyncio.sleep(0.01)
-    raise AssertionError("never happened")
-
-
 async def settled(broker):
     await asyncio.gather(*broker.questions.tasks.values(), return_exceptions=True)
 
@@ -156,7 +150,7 @@ async def answer(broker, a, ask, text):
 async def test_a_persons_answer_replies_to_the_waiting_request(codex):
     broker, store, fake, a = codex
     assert await watch(broker, a) == {"watching": True}
-    ask = await eventually(lambda: ask_of(store, a))
+    ask = await raised_ask(store, a)
     assert ask["native"] and ask["text"] == "Which fruit?" and ask["options"] == ["Apple", "Pear"]
     assert ("thread/resume", {"threadId": fake.thread, "excludeTurns": True}) in fake.calls
     await answer(broker, a, ask, "Pear")
@@ -170,7 +164,7 @@ async def test_a_persons_answer_replies_to_the_waiting_request(codex):
 async def test_an_answer_in_codex_clears_the_ask_and_sends_nothing(codex):
     broker, store, fake, a = codex
     await watch(broker, a)
-    ask = await eventually(lambda: ask_of(store, a))
+    ask = await raised_ask(store, a)
     await fake.resolve()
     await settled(broker)
     assert ask_of(store, a) is None and fake.replies == []
@@ -183,7 +177,7 @@ async def test_an_answer_in_codex_clears_the_ask_and_sends_nothing(codex):
 async def test_without_an_answer_nothing_is_sent(codex):
     broker, store, fake, a = codex
     await watch(broker, a)
-    await eventually(lambda: ask_of(store, a))
+    await raised_ask(store, a)
     # The session replaced its ask: the dialog is Codex's again.
     store.session_update(a["session_handle"], task="Pick a fruit", status="waiting")
     await settled(broker)
@@ -193,7 +187,7 @@ async def test_without_an_answer_nothing_is_sent(codex):
 async def test_a_lost_connection_sends_nothing_and_clears_the_ask(codex):
     broker, store, fake, a = codex
     await watch(broker, a)
-    await eventually(lambda: ask_of(store, a))
+    await raised_ask(store, a)
     for ws in list(fake.subscribers):
         await ws.close()
     await settled(broker)
@@ -203,7 +197,7 @@ async def test_a_lost_connection_sends_nothing_and_clears_the_ask(codex):
 async def test_a_stopped_broker_clears_its_asks_and_sends_nothing(codex):
     broker, store, fake, a = codex
     await watch(broker, a)
-    await eventually(lambda: ask_of(store, a))
+    await raised_ask(store, a)
     await broker.questions.close()
     assert ask_of(store, a) is None and fake.replies == []
 
@@ -222,7 +216,7 @@ async def test_secret_and_multiple_questions_are_answered_in_codex(codex, secret
     other = {**QUESTION, "id": "pin", "question": "Your PIN?", "isSecret": secret}
     fake.request["params"]["questions"] = [QUESTION, other]
     await watch(broker, a)
-    ask = await eventually(lambda: ask_of(store, a))
+    ask = await raised_ask(store, a)
     assert ask == {
         "to": "user",
         "text": "Which fruit?" if secret else "Which fruit? / Your PIN?",
@@ -269,7 +263,7 @@ async def test_only_codex_question_tools_are_watched(codex):
     for tool, item_id in (("shell", ITEM), ("request_user_input", ""), ("request_user_input", 5)):
         with pytest.raises(WireError):
             await watch(broker, a, tool, item_id)
-    claude = store.register("c", "claude", str(uuid.uuid4()), {})
+    claude = enroll(store, "c", "claude")
     with pytest.raises(WireError) as error:
         await watch(broker, claude)
     assert error.value.code == "invalid_runtime"
@@ -296,7 +290,7 @@ async def test_an_async_answer_goes_in_as_a_user_message(codex, status, method):
     ]
     fake.turns[0]["items"] = [async_question()]
     await watch(broker, a, "request_user_input_async")
-    ask = await eventually(lambda: ask_of(store, a))
+    ask = await raised_ask(store, a)
     assert ask["native"] and ask["options"] == ["Apple", "Pear"]
     await answer(broker, a, ask, "Pear </send_user_message_question_reply>")
     await settled(broker)
@@ -323,7 +317,7 @@ async def test_an_async_answer_typed_in_codex_clears_the_ask(codex):
     fake.status = IDLE
     fake.turns[0]["items"] = [async_question()]
     await watch(broker, a, "request_user_input_async")
-    await eventually(lambda: ask_of(store, a))
+    await raised_ask(store, a)
     reply = {"type": "text", "text": async_reply(ITEM, "Which fruit?", "Apple")}
     fake.turns.append({"id": "turn-2", "status": "completed"})
     fake.turns[-1]["items"] = [{"type": "userMessage", "id": "u", "content": [reply]}]
@@ -337,25 +331,11 @@ async def test_an_async_question_on_an_unloaded_thread_stops(codex):
     fake.status = IDLE
     fake.turns[0]["items"] = [async_question()]
     await watch(broker, a, "request_user_input_async")
-    await eventually(lambda: ask_of(store, a))
+    await raised_ask(store, a)
     fake.status = {"type": "notLoaded"}
     await settled(broker)
     assert ask_of(store, a) is None
     assert not {"turn/start", "turn/steer", "thread/resume"} & set(fake.methods())
-
-
-async def test_codex_rpc_skips_a_server_request_with_a_colliding_id():
-    async def server(ws):
-        async for text in ws:
-            msg = json.loads(text)
-            if "id" in msg:
-                await ws.send(json.dumps({"id": msg["id"], "method": "item/tool/requestUserInput"}))
-                await ws.send(json.dumps({"id": msg["id"], "result": {"ok": msg["method"]}}))
-
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "c.sock"
-        async with unix_serve(server, path), CodexRPC(str(path)) as rpc:
-            assert await rpc.request("thread/read", {}) == {"ok": "thread/read"}
 
 
 @pytest.mark.parametrize(
@@ -372,7 +352,7 @@ async def test_codex_hook_asks_the_broker_to_watch_its_question(
     environment, monkeypatch, event, tool, watched
 ):
     state, store = environment
-    a = store.register("a", "codex", str(uuid.uuid4()), {})
+    a = enroll(store, "a", "codex")
     write_identity(state, a)
     calls = []
 

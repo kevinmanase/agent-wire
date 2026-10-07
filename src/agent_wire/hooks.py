@@ -25,7 +25,6 @@ EVENTS = {
     "PermissionRequest",
     "Stop",
 }
-QUESTIONS = re.compile(r"(?:request_user_input(?:_async)?|AskUserQuestion|ExitPlanMode)$")
 # Claude Code's peer permission classes. Plan mode can be either class, so it attests nothing.
 MODE_CLASSES = {
     "bypassPermissions": "bypass",
@@ -38,6 +37,7 @@ DIALOGS = ("AskUserQuestion", "ExitPlanMode")
 # Codex's question tools, and the hook event at which each one's question exists or is near.
 BLOCKING, ASYNC = "request_user_input", "request_user_input_async"
 QUESTION_EVENTS = {"PreToolUse": BLOCKING, "PostToolUse": ASYNC}
+QUESTIONS = re.compile(f"(?:{ASYNC}|{BLOCKING}|{'|'.join(DIALOGS)})$")
 APPROVE, KEEP_PLANNING = "Approve", "Keep planning"
 # Below the hook's configured timeout (docs: 86400), so the hook closes its own ask first.
 ANSWER_WAIT = 23 * 3600

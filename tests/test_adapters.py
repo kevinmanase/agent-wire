@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from websockets.asyncio.server import unix_serve
 
-from agent_wire.adapters import NativeAdapters
+from agent_wire.adapters import CodexRPC, NativeAdapters
 from agent_wire.errors import DeliveryUnknown, Offline
 
 
@@ -162,3 +162,15 @@ async def test_claude_session_fence_and_native_peer_frame(sockets, version):
         record.write_text(record.read_text().replace("native-claude", "replacement"))
         with pytest.raises(Offline):
             await adapter.deliver(agent, envelope())
+
+
+async def test_codex_rpc_skips_a_server_request_with_a_colliding_id(sockets):
+    async def server(ws):
+        async for text in ws:
+            msg = json.loads(text)
+            if "id" in msg:
+                await ws.send(json.dumps({"id": msg["id"], "method": "item/tool/requestUserInput"}))
+                await ws.send(json.dumps({"id": msg["id"], "result": {"ok": msg["method"]}}))
+
+    async with unix_serve(server, sockets / "c.sock"), CodexRPC(str(sockets / "c.sock")) as rpc:
+        assert await rpc.request("thread/read", {}) == {"ok": "thread/read"}
