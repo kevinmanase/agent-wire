@@ -63,6 +63,9 @@ class Broker:
             )
             pid = endpoint.pop("pid", rest.get("pid"))
             return self.store.refresh_endpoint(token, endpoint, rest["cwd"], pid)
+        if method == "ask_poll":
+            # A dialog hook polls this every second; it has nothing for the delivery worker.
+            return self.store.ask_poll(token, **rest)
         if method == "agents_list":
             if rest:
                 raise WireError("invalid_input", "agents_list accepts only a session credential")
@@ -70,7 +73,6 @@ class Broker:
         methods = {
             "session_update": self.store.session_update,
             "session_ask": self.store.session_ask,
-            "ask_poll": self.store.ask_poll,
             "session_heartbeat": self.store.session_heartbeat,
             "message_send": self.store.send,
             "messages_read": self.store.inbox,

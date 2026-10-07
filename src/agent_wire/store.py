@@ -32,6 +32,7 @@ REPORT_TEXT = {
     "stage": 64,
 }
 ASK_FIELDS = ("to", "text", "kind")
+ASK_TEXT = 512
 # Preset answers an ask may carry, in the asker's order.
 REPORT_COLUMNS = {
     "lane": "TEXT NOT NULL DEFAULT ''",
@@ -85,7 +86,7 @@ def check_ask(ask):
     if type(ask.get("native", False)) is not bool:
         raise WireError("invalid_input", "ask.native must be a boolean")
     bounded_text(ask["to"], "ask.to", 64)
-    bounded_text(ask["text"], "ask.text", 512)
+    bounded_text(ask["text"], "ask.text", ASK_TEXT)
     if ask["kind"] not in ASK_KINDS:
         raise WireError("invalid_input", f"ask.kind must be one of {ASK_KINDS}")
     # Preset answers in the asker's order, limited in characters as the shared contract says.
@@ -99,6 +100,11 @@ def check_ask(ask):
             raise WireError(
                 "invalid_input", "each ask option must be nonempty text, at most 80 characters"
             )
+
+
+def check_raised_at(value):
+    if type(value) not in (int, float):
+        raise WireError("invalid_input", "raised_at must be the ask's raised_at number")
 
 
 def ask_columns(ask: dict | None, now: float) -> dict:
@@ -383,20 +389,28 @@ class Store:
         )
         return self.session(agent["id"])
 
-    def session_ask(self, token: str, *, ask: dict | None) -> dict:
-        """Set or clear (null) only the caller's ask; the rest of its report stays."""
+    def session_ask(
+        self, token: str, *, ask: dict | None, if_raised_at: float | None = None
+    ) -> dict:
+        """Set or clear (null) only the caller's ask; the rest of its report stays.
+
+        With `if_raised_at`, only while the open ask is the one raised then.
+        """
         agent = self.authenticate(token)
         check_ask(ask)
+        if if_raised_at is not None:
+            check_raised_at(if_raised_at)
         now = self.clock()
         columns = ask_columns(ask, now)
         changed = self.db.execute(
             f"UPDATE session_reports SET ask_raised_at={raised_at(':')},"
             f"ask_answer={kept_answer(':')},"
             + "".join(f"{key}=:{key}," for key in columns if key != "ask_raised_at")
-            + "last_seen=:now WHERE agent_id=:agent_id AND reported_at IS NOT NULL",
-            {**columns, "now": now, "agent_id": agent["id"]},
+            + "last_seen=:now WHERE agent_id=:agent_id AND reported_at IS NOT NULL"
+            + (" AND ask_raised_at=:if_raised_at" if if_raised_at is not None else ""),
+            {**columns, "now": now, "agent_id": agent["id"], "if_raised_at": if_raised_at},
         ).rowcount
-        if not changed and ask is not None:
+        if not changed and ask is not None and if_raised_at is None:
             raise WireError("no_report", "Publish a report before setting an ask")
         return self.session(agent["id"])
 
@@ -407,8 +421,7 @@ class Store:
         only on the ask raised at `raised_at`, so a stale answer never reaches a newer question.
         """
         bounded_text(answer, "answer", MAX_ANSWER)
-        if type(raised_at) not in (int, float):
-            raise WireError("invalid_input", "raised_at must be the ask's raised_at number")
+        check_raised_at(raised_at)
         bounded_text(session, "session", 200)
         agent = self.resolve(session)
         if self.db.execute(
@@ -429,29 +442,22 @@ class Store:
             )
         raise WireError("already_answered", "That ask already has an answer")
 
-    def ask_poll(self, token: str, *, raised_at: float, close: bool = False) -> dict:
-        """The caller's answer to its ask raised at `raised_at`, taken once.
+    def ask_poll(self, token: str, *, raised_at: float) -> dict:
+        """Whether the caller's ask raised at `raised_at` is open, and its answer, taken once.
 
-        Taking an answer clears the ask; so does `close`. Either touches only that ask.
+        Taking an answer clears that ask.
         """
         agent = self.authenticate(token)
-        if type(raised_at) not in (int, float) or type(close) is not bool:
-            raise WireError("invalid_input", "Expected a raised_at number and boolean close")
+        check_raised_at(raised_at)
         row = self.db.execute(
             "SELECT ask_answer FROM session_reports WHERE agent_id=? AND ask_raised_at=?",
             (agent["id"], raised_at),
         ).fetchone()
         if row is None:
             return {"open": False, "answer": None}
-        if row["ask_answer"] is None and not close:
+        if row["ask_answer"] is None:
             return {"open": True, "answer": None}
-        clear = ask_columns(None, self.clock())
-        self.db.execute(
-            "UPDATE session_reports SET "
-            + ",".join(f"{key}=NULL" for key in clear)
-            + ",ask_answer=NULL WHERE agent_id=? AND ask_raised_at=?",
-            (agent["id"], raised_at),
-        )
+        self.session_ask(token, ask=None, if_raised_at=raised_at)
         return {"open": False, "answer": row["ask_answer"]}
 
     def refresh_endpoint(self, token: str, endpoint: dict, cwd: str, pid=None) -> dict:

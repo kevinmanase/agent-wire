@@ -78,12 +78,13 @@ on such an ask. A person can answer it from outside the terminal:
   question. It fails with `ask_closed` when that ask was answered, cleared, or
   replaced, `not_native` when the ask is not a native dialog, and
   `already_answered` when an answer is already waiting. The first answer wins.
-- `ask_poll` is for the waiting hook, with the session's own credential:
-  `raised_at`, and optional `close` (default false). It returns `open` and
-  `answer`. Taking an answer clears the ask, so it is taken once; `close: true`
-  clears the ask without taking an answer. Either touches the ask only while
-  it is still the one raised at `raised_at`. A changed or cleared ask drops any
-  answer that was not taken.
+- `ask_poll` is for the waiting hook, with the session's own credential and
+  `raised_at`. It returns `open` (whether that ask is still the open one) and
+  `answer`. Taking an answer clears the ask, so it is taken once. A changed or
+  cleared ask drops any answer that was not taken.
+- `session_ask` takes an optional `if_raised_at`: the change then applies only
+  while the open ask is the one raised at that time. The hook clears its own
+  ask this way, so it never clears a newer one.
 
 Only a person answers. `ask_answer` refuses any request that carries a
 `session_handle`, so no enrolled session's credential can call it, and it is

@@ -70,6 +70,8 @@ def test_a_new_ask_drops_an_untaken_answer(store):
     newer = store.session_ask(a["session_handle"], ask={**ASK, "text": "Which shade?"})
     assert store.ask_poll(a["session_handle"], raised_at=raised)["open"] is False
     later = newer["report"]["ask"]["raised_at"]
+    # A clear guarded by the old ask's time leaves the newer ask alone.
+    store.session_ask(a["session_handle"], ask=None, if_raised_at=raised)
     assert store.ask_poll(a["session_handle"], raised_at=later) == {"open": True, "answer": None}
 
 

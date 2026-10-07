@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -12,7 +13,8 @@ from .adapters import NativeAdapters
 from .client import call
 from .errors import WireError
 from .paths import read_identity_record, write_identity
-from .processes import ancestor
+from .processes import alive, ancestor
+from .store import ASK_TEXT
 
 EVENTS = {
     "SessionStart",
@@ -190,17 +192,16 @@ def dialog_ask(tool: str, tool_input: dict, to: str) -> dict:
     one Agent Wire can answer. A multi-question dialog lists every question but is answered
     in the terminal."""
     if tool == "ExitPlanMode":
-        options = [APPROVE, KEEP_PLANNING]
         return {
             "to": to,
             "text": "Approve the plan?",
             "kind": "approve",
-            "options": options,
+            "options": [APPROVE, KEEP_PLANNING],
             "native": True,
         }
     questions = [q for q in tool_input.get("questions") or [] if isinstance(q, dict)]
     texts = [str(q.get("question") or q.get("header") or "").strip() for q in questions]
-    text = " / ".join(t for t in texts if t).encode()[:512].decode(errors="ignore")
+    text = " / ".join(t for t in texts if t).encode()[:ASK_TEXT].decode(errors="ignore")
     ask = {"to": to, "text": text.strip() or "Answer the question", "kind": "decide"}
     if len(questions) != 1 or not isinstance(questions[0].get("question"), str):
         return ask
@@ -209,19 +210,18 @@ def dialog_ask(tool: str, tool_input: dict, to: str) -> dict:
         isinstance(label, str) and label.strip() and len(label) <= 80 for label in labels
     ):
         ask["options"] = labels
-    return {**ask, "native": True}
+    ask["native"] = True
+    return ask
 
 
 def dialog_decision(tool: str, tool_input: dict, answer: str) -> dict:
     """Claude's PermissionRequest output that relays a person's answer to the dialog."""
-    if tool == "ExitPlanMode" and answer.strip().casefold() != APPROVE.casefold():
-        decision = {
-            "behavior": "deny",
-            "message": f"The user did not approve the plan. Their answer: {answer}",
-        }
-    elif tool == "ExitPlanMode":
-        # Approves the plan as given. Claude then leaves plan mode for manual approval mode.
+    if tool == "ExitPlanMode":
+        # Approves the plan as given; Claude leaves plan mode for accept-edits mode.
         decision = {"behavior": "allow", "updatedInput": tool_input}
+        if answer.strip().casefold() != APPROVE.casefold():
+            message = f"The user did not approve the plan. Their answer: {answer}"
+            decision = {"behavior": "deny", "message": message}
     else:
         question = tool_input["questions"][0]["question"]
         decision = {
@@ -246,6 +246,9 @@ class Transcript:
 
     def answered(self) -> bool:
         try:
+            # Claude is blocked on the dialog, so the transcript rarely grows.
+            if os.stat(self.path).st_size == self.offset:
+                return False
             with open(self.path, "rb") as stream:
                 size = stream.seek(0, os.SEEK_END)
                 if self.offset is None:
@@ -260,9 +263,12 @@ class Transcript:
         self.partial = lines.pop()
         for line in lines:
             self.read(line)
-        return not self.calls.isdisjoint(self.results)
+        self.results &= self.calls  # A call is written no later than its result.
+        return bool(self.results)
 
     def read(self, line: bytes):
+        if b'"tool_' not in line:
+            return
         try:
             entry = json.loads(line)
             content = entry["message"]["content"]
@@ -276,18 +282,6 @@ class Transcript:
                 self.calls.add(block.get("id"))
             elif block.get("type") == "tool_result" and stamp >= self.since:
                 self.results.add(block.get("tool_use_id"))
-
-
-def running(pid: int | None) -> bool:
-    if pid is None:
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        pass
-    return True
 
 
 async def answer_hook(
@@ -330,18 +324,23 @@ async def answer_hook(
     transcript = Transcript(payload.get("transcript_path"), tool, started)
     claude = ancestor("claude")
     deadline = time.monotonic() + wait
-    while True:
-        close = transcript.answered() or time.monotonic() > deadline or not running(claude)
+    while not (
+        transcript.answered()
+        or time.monotonic() > deadline
+        or (claude is not None and not alive(claude))
+    ):
         try:
-            result = await call(
-                state, "ask_poll", session_handle=token, raised_at=raised, close=close
-            )
+            result = await call(state, "ask_poll", session_handle=token, raised_at=raised)
         except WireError as exc:
-            if close or exc.code not in ("broker_unavailable", "request_unknown"):
+            if exc.code not in ("broker_unavailable", "request_unknown"):
                 return {}
         else:
-            if not close and result["answer"] is not None:
+            if result["answer"] is not None:
                 return dialog_decision(tool, tool_input, result["answer"])
-            if close or not result["open"]:
+            if not result["open"]:
                 return {}
         await asyncio.sleep(poll)
+    # Answered in the terminal, or no longer waiting: clear this ask, never a newer one.
+    with contextlib.suppress(WireError):
+        await call(state, "session_ask", session_handle=token, ask=None, if_raised_at=raised)
+    return {}
