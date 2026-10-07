@@ -71,30 +71,37 @@ class CodexQuestions:
 
     def __init__(self, store):
         self.store = store
+        # The newest watcher per session, and every watcher still running, replaced ones too.
         self.tasks: dict[str, asyncio.Task] = {}
+        self.running: set[asyncio.Task] = set()
 
     def watch(self, agent, tool: str, item_id: str):
         if old := self.tasks.get(agent["id"]):
             old.cancel()
         task = asyncio.create_task(self.run(agent, tool, item_id, old))
         self.tasks[agent["id"]] = task
+        self.running.add(task)
 
         def forget(done: asyncio.Task):
+            self.running.discard(done)
             if self.tasks.get(agent["id"]) is done:
                 del self.tasks[agent["id"]]
 
         task.add_done_callback(forget)
 
     async def close(self):
-        tasks = list(self.tasks.values())
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        """Stop every watcher and wait for each one's cleanup, replaced watchers included."""
+        while self.running:
+            tasks = list(self.running)
+            for task in tasks:
+                if not task.cancelling():  # A second cancel would cut its cleanup short.
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def run(self, agent, tool: str, item_id: str, old: asyncio.Task | None):
         if old is not None:
-            # Its own cleanup clears only its own ask.
-            await asyncio.gather(old, return_exceptions=True)
+            # Its own cleanup clears only its own ask. Unlike gather, wait passes no cancel on.
+            await asyncio.wait({old})
         # Any failure ends the watch with nothing sent; cleanup clears the ask.
         with contextlib.suppress(Exception):
             path = json.loads(agent["endpoint"])["path"]
@@ -154,25 +161,32 @@ class CodexQuestions:
     async def relay(self, rpc, agent, raised: float, request_id, question_id):
         """Reply to the request with a person's answer, until Codex resolves it either way."""
         thread = agent["native_id"]
-        while True:
-            try:
-                message = await asyncio.wait_for(rpc.receive(), POLL)
-            except TimeoutError:
-                message = {}
-            params = message.get("params") or {}
-            method = message.get("method")
-            if params.get("threadId") == thread and (
-                (method == "serverRequest/resolved" and params.get("requestId") == request_id)
-                or (method == "thread/status/changed" and not waiting(params.get("status", {})))
-            ):
-                return
-            taken = self.store.take_answer(agent["id"], raised)
-            if valid_answer(taken["answer"]) and isinstance(question_id, str):
-                answers = {question_id: {"answers": [taken["answer"]]}}
-                await rpc.respond(request_id, {"answers": answers})
-                return
-            if not taken["open"]:
-                return
+        # One read stays pending across polls: wait_for could swallow a cancel as its timeout.
+        reader = asyncio.ensure_future(rpc.receive())
+        try:
+            while True:
+                await asyncio.wait({reader}, timeout=POLL)
+                message = reader.result() if reader.done() else {}
+                if reader.done():
+                    reader = asyncio.ensure_future(rpc.receive())
+                params = message.get("params") or {}
+                method = message.get("method")
+                if params.get("threadId") == thread and (
+                    (method == "serverRequest/resolved" and params.get("requestId") == request_id)
+                    or (method == "thread/status/changed" and not waiting(params.get("status", {})))
+                ):
+                    return
+                taken = self.store.take_answer(agent["id"], raised)
+                if valid_answer(taken["answer"]) and isinstance(question_id, str):
+                    answers = {question_id: {"answers": [taken["answer"]]}}
+                    await rpc.respond(request_id, {"answers": answers})
+                    return
+                if not taken["open"]:
+                    return
+        finally:
+            # Settled before cleanup reads: one connection allows one reader at a time.
+            reader.cancel()
+            await asyncio.wait({reader})
 
     async def asynchronous(self, rpc, agent, item_id: str):
         thread = agent["native_id"]
@@ -182,6 +196,8 @@ class CodexQuestions:
                     break
                 await asyncio.sleep(0.25)
         questions = item.get("questions") or []
+        if await self.replied(rpc, thread, item_id):  # Already answered in Codex.
+            return
         raised = self.raise_ask(agent, async_ask(questions))
         if raised is None:
             return
@@ -191,8 +207,10 @@ class CodexQuestions:
                 await asyncio.sleep(POLL)
                 taken = self.store.take_answer(agent["id"], raised)
                 if valid_answer(taken["answer"]) and len(questions) == 1:
-                    text = async_reply(item_id, questions[0]["title"], taken["answer"])
-                    await self.send_reply(rpc, thread, text)
+                    # Codex takes every reply, so never send a second one.
+                    if not await self.replied(rpc, thread, item_id):
+                        text = async_reply(item_id, questions[0]["title"], taken["answer"])
+                        await self.send_reply(rpc, thread, text)
                     return
                 if not taken["open"]:
                     return
@@ -212,7 +230,8 @@ class CodexQuestions:
         return next(
             (
                 item
-                for item in await self.items(rpc, thread, 1)
+                # Two turns: an answer typed in Codex may already follow the question's turn.
+                for item in await self.items(rpc, thread, 2)
                 if item.get("type") == "agentMessage"
                 and item.get("id") == item_id
                 and item.get("delivery") == "async"

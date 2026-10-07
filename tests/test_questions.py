@@ -40,6 +40,8 @@ class FakeCodex:
         self.thread, self.status = thread, status
         # Whether the pending request reaches a new subscriber before the resume response.
         self.replay_first = False
+        # Seconds an unsubscribe takes, and how many finished.
+        self.unsubscribe_delay, self.unsubscribed = 0, 0
         self.calls, self.replies, self.subscribers = [], [], set()
         self.request = {
             "method": "item/tool/requestUserInput",
@@ -69,6 +71,10 @@ class FakeCodex:
                     continue
                 method, params = msg["method"], msg["params"]
                 self.calls.append((method, params))
+                if method == "thread/unsubscribe":
+                    await asyncio.sleep(self.unsubscribe_delay)
+                    self.subscribers.discard(ws)
+                    self.unsubscribed += 1
                 replay = method == "thread/resume" and self.status == WAITING
                 if replay and self.replay_first:
                     await ws.send(json.dumps(self.request))
@@ -77,8 +83,6 @@ class FakeCodex:
                     self.subscribers.add(ws)
                     if replay and not self.replay_first:
                         await ws.send(json.dumps(self.request))
-                elif method == "thread/unsubscribe":
-                    self.subscribers.discard(ws)
         finally:
             self.subscribers.discard(ws)
 
@@ -344,12 +348,59 @@ async def test_an_async_answer_typed_in_codex_clears_the_ask(codex):
     fake.turns[0]["items"] = [async_question()]
     await watch(broker, a, "request_user_input_async")
     await raised_ask(store, a)
-    reply = {"type": "text", "text": async_reply(ITEM, "Which fruit?", "Apple")}
-    fake.turns.append({"id": "turn-2", "status": "completed"})
-    fake.turns[-1]["items"] = [{"type": "userMessage", "id": "u", "content": [reply]}]
+    fake.turns.append(typed_reply())
     await settled(broker)
     assert ask_of(store, a) is None
     assert not {"turn/start", "turn/steer", "thread/resume"} & set(fake.methods())
+
+
+def typed_reply(answer="Apple"):
+    """Codex's own UI answered the async question: its reply is in a new turn."""
+    reply = {"type": "text", "text": async_reply(ITEM, "Which fruit?", answer)}
+    return {
+        "id": "turn-2",
+        "status": "completed",
+        "items": [{"type": "userMessage", "id": "u", "content": [reply]}],
+    }
+
+
+async def test_an_outside_answer_after_one_typed_in_codex_sends_nothing(codex, monkeypatch):
+    broker, store, fake, a = codex
+    monkeypatch.setattr(questions_module, "REPLY_CHECK", 10**6)  # Only the check before sending.
+    fake.status = IDLE
+    fake.turns[0]["items"] = [async_question()]
+    await watch(broker, a, "request_user_input_async")
+    ask = await raised_ask(store, a)
+    fake.turns.append(typed_reply())
+    await answer(broker, a, ask, "Pear")
+    await settled(broker)
+    assert not {"turn/start", "turn/steer"} & set(fake.methods())
+    assert ask_of(store, a) is None
+
+
+async def test_an_async_question_answered_before_its_ask_raises_none(codex, monkeypatch):
+    broker, store, fake, a = codex
+    monkeypatch.setattr(questions_module, "REPLY_CHECK", 10**6)  # Only the check before raising.
+    fake.status = IDLE
+    fake.turns[0]["items"] = [async_question()]
+    fake.turns.append(typed_reply())
+    await watch(broker, a, "request_user_input_async")
+    await asyncio.wait_for(settled(broker), 2)
+    assert ask_of(store, a) is None
+    assert not {"turn/start", "turn/steer"} & set(fake.methods())
+
+
+async def test_close_waits_for_every_replaced_watcher(codex):
+    broker, store, fake, a = codex
+    fake.unsubscribe_delay = 0.3
+    await watch(broker, a)
+    await raised_ask(store, a)
+    # Two quick replacements: the middle one is cancelled before it awaits the first.
+    await watch(broker, a)
+    await watch(broker, a)
+    await broker.questions.close()
+    assert fake.unsubscribed == fake.methods().count("thread/resume") >= 1
+    assert fake.subscribers == set()
 
 
 async def test_a_secret_async_question_raises_no_ask(codex):
