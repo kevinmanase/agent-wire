@@ -217,6 +217,9 @@ An opt-in Claude hook raises Claude Code's question and plan-approval dialogs
 as native asks, so a person can answer them from outside the terminal with
 `agent-wire answer <session> --ask-at <raised_at> -- <answer>`. See
 [setup](docs/setup.md#answering-claudes-question-dialogs-from-outside-the-terminal-opt-in).
+Codex's question tools work the same way through its app server, with the
+heartbeat hooks; see
+[setup](docs/setup.md#answering-codexs-question-dialogs-from-outside-the-terminal).
 
 Write `ticket` so a floor can group every report on the same work: the Linear
 issue key, such as `ENG-2649`, or `<repo>#<number>` for the GitHub issue, such

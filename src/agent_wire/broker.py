@@ -9,9 +9,11 @@ from pathlib import Path
 
 from .adapters import NativeAdapters
 from .errors import DeliveryUnknown, Offline, WireError
+from .hooks import QUESTION_EVENTS
 from .paths import MAX_FRAME, private_directory
 from .permissions import sender_mode
-from .store import Store
+from .questions import CodexQuestions
+from .store import Store, bounded_text
 
 
 class Broker:
@@ -20,6 +22,9 @@ class Broker:
         self.adapters = adapters or NativeAdapters()
         self.wake = asyncio.Event()
         self.delivery_lock = asyncio.Lock()
+        # Watchers of Codex question dialogs live in this process; an earlier broker's are gone.
+        self.questions = CodexQuestions(store)
+        store.clear_codex_dialogs()
 
     async def call(self, method: str, params: dict):
         if not isinstance(params, dict):
@@ -67,6 +72,15 @@ class Broker:
         if method == "ask_poll":
             # A dialog hook polls this every second; it has nothing for the delivery worker.
             return self.store.ask_poll(token, **rest)
+        if method == "question_watch":
+            # A Codex session's hook says its question tool is running. The broker raises the
+            # ask from Codex's own request; it never answers without a person (ask_answer).
+            if set(rest) != {"tool", "item_id"} or rest["tool"] not in QUESTION_EVENTS.values():
+                raise WireError("invalid_input", "question_watch needs a question tool and item_id")
+            if agent["runtime"] != "codex":
+                raise WireError("invalid_runtime", "Only Codex questions are watched")
+            self.questions.watch(agent, rest["tool"], bounded_text(rest["item_id"], "item_id", 200))
+            return {"watching": True}
         if method == "agents_list":
             if rest:
                 raise WireError("invalid_input", "agents_list accepts only a session credential")
@@ -216,6 +230,7 @@ async def serve(state: Path):
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await worker
+            await broker.questions.close()
             store.close()
             path.unlink(missing_ok=True)
     finally:

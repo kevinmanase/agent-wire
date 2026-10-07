@@ -412,7 +412,10 @@ class Store:
 
         With `if_raised_at`, only while the open ask is the one raised then.
         """
-        agent = self.authenticate(token)
+        return self.set_ask(self.authenticate(token)["id"], ask, if_raised_at)
+
+    def set_ask(self, agent_id: str, ask: dict | None, if_raised_at: float | None = None) -> dict:
+        """session_ask for an enrollment the broker itself acts for, such as a Codex dialog."""
         check_ask(ask)
         if if_raised_at is not None:
             check_raised_at(if_raised_at)
@@ -424,11 +427,11 @@ class Store:
             + "".join(f"{key}=:{key}," for key in columns if key != "ask_raised_at")
             + "last_seen=:now WHERE agent_id=:agent_id AND reported_at IS NOT NULL"
             + (" AND ask_raised_at=:if_raised_at" if if_raised_at is not None else ""),
-            {**columns, "now": now, "agent_id": agent["id"], "if_raised_at": if_raised_at},
+            {**columns, "now": now, "agent_id": agent_id, "if_raised_at": if_raised_at},
         ).rowcount
         if not changed and ask is not None and if_raised_at is None:
             raise WireError("no_report", "Publish a report before setting an ask")
-        return self.session(agent["id"])
+        return self.session(agent_id)
 
     def answer(self, session: str, raised_at: float, answer: str) -> dict:
         """Record a person's answer to a session's open native-dialog ask.
@@ -458,22 +461,33 @@ class Store:
             )
         raise WireError("already_answered", "That ask already has an answer")
 
+    def clear_codex_dialogs(self):
+        """Clear Codex dialog asks. The broker that watched them is gone, so none is answerable."""
+        cleared = "".join(f"{key}=NULL," for key in ask_columns(None, 0))
+        self.db.execute(
+            f"UPDATE session_reports SET {cleared}ask_answer=NULL WHERE ask_native=1 AND agent_id "
+            "IN (SELECT id FROM agents WHERE runtime='codex')"
+        )
+
     def ask_poll(self, token: str, *, raised_at: float) -> dict:
         """Whether the caller's ask raised at `raised_at` is open, and its answer, taken once.
 
         Taking an answer clears that ask.
         """
-        agent = self.authenticate(token)
+        return self.take_answer(self.authenticate(token)["id"], raised_at)
+
+    def take_answer(self, agent_id: str, raised_at: float) -> dict:
+        """ask_poll for an enrollment the broker itself acts for."""
         check_raised_at(raised_at)
         row = self.db.execute(
             "SELECT ask_answer FROM session_reports WHERE agent_id=? AND ask_raised_at=?",
-            (agent["id"], raised_at),
+            (agent_id, raised_at),
         ).fetchone()
         if row is None:
             return {"open": False, "answer": None}
         if row["ask_answer"] is None:
             return {"open": True, "answer": None}
-        self.session_ask(token, ask=None, if_raised_at=raised_at)
+        self.set_ask(agent_id, None, if_raised_at=raised_at)
         return {"open": False, "answer": row["ask_answer"]}
 
     def refresh_endpoint(self, token: str, endpoint: dict, cwd: str, pid=None) -> dict:

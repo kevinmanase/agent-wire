@@ -68,7 +68,8 @@ ask included.
 
 An ask with `native: true` stands for a dialog open in the session's own
 runtime, such as Claude Code's question or plan-approval dialog, raised by a
-hook that waits for an answer (see setup). `sessions_list` shows `native: true`
+hook that waits for an answer, or Codex's question tools, raised by the broker
+(see setup and Codex below). `sessions_list` shows `native: true`
 on such an ask. A person can answer it from outside the terminal:
 
 - `ask_answer` takes `session` (name or enrollment ID), `raised_at` (the ask's
@@ -85,6 +86,13 @@ on such an ask. A person can answer it from outside the terminal:
 - `session_ask` takes an optional `if_raised_at`: the change then applies only
   while the open ask is the one raised at that time. The hook clears its own
   ask this way, so it never clears a newer one.
+
+- `question_watch` is for a Codex session's hook, with its own credential,
+  `tool` (`request_user_input` or `request_user_input_async`), and `item_id`
+  (the tool call's ID). The broker then watches that question on the caller's
+  own thread and returns `{"watching": true}` at once. It raises the ask from
+  Codex's request and relays only an answer taken through `ask_answer`. A
+  session has at most one watch; a new one ends the previous one.
 
 Only a person answers. `ask_answer` refuses any request that carries a
 `session_handle`, so no enrolled session's credential can call it, and it is
@@ -205,7 +213,40 @@ Runtime processing order is outside the broker's guarantees.
 The adapter was originally verified against **app-server 0.159.0**. Native
 versions are not gated; the app-server version may differ from the installed CLI.
 It uses the local control socket via WebSocket, initializes the connection, checks `thread/loaded/list`, and reads the identified thread. It
-does not resume an unloaded thread.
+does not resume an unloaded thread; it attaches to a loaded one only for a
+question dialog, as below.
+
+Codex question dialogs (see Native dialogs) use more of the app server, and
+only for a thread whose hook reported a question tool:
+
+- `thread/read` (read-only) until the thread's status is `active` with
+  `waitingOnUserInput`, for up to 30 seconds. An idle or unloaded thread ends
+  the watch.
+- `thread/resume` with `threadId` and `excludeTurns: true`, only for that
+  active, loaded thread. Codex re-sends the thread's pending server requests,
+  with their ids, to the new subscriber; this is the only way to list them.
+  The broker matches `item/tool/requestUserInput` by `itemId`, replies to its
+  id with `{"answers": {"<questionId>": {"answers": ["<answer>"]}}}` only for a
+  person's answer, and never answers any other request, not even with an
+  error, since an error would resolve it. It stops on `serverRequest/resolved`
+  for that id or a status without `waitingOnUserInput`, then sends
+  `thread/unsubscribe`, which leaves the thread loaded for its other clients.
+- For `request_user_input_async`, `thread/turns/list` finds the `agentMessage`
+  with `delivery: "async"` and the call's ID. The answer is a user message:
+  `<send_user_message_question_reply>`, a newline, the JSON
+  `[{"answer": …, "question": "<title>", "questionItemId":
+  "[\"request_user_input_async\",\"<item id>\",0]"}]` with every `<` escaped
+  as `\u003c`, a newline, and the closing tag. It goes in with `turn/steer`
+  (with the running turn's `expectedTurnId`) or, when idle or when the steer is
+  rejected, `turn/start`. Every few seconds the broker reads the latest two
+  turns' items (a steered message isn't in a turn's summary); a user message
+  with that reply clears the ask, and so does an unloaded thread. The broker
+  also checks for it before raising the ask and before sending an answer, and
+  sends nothing when it is there.
+
+Server request ids count separately from client ones, so a response is matched
+by id and the absence of `method`. Verified against the app-server schema of
+Codex 0.160.1 and 0.161.0 (the same for these methods), and live on 0.160.1.
 
 Delivery calls `turn/start` with an empty `input` and
 `toolOutput: {name: "message_receive", namespace: "agent_wire", output: "..."}`.
