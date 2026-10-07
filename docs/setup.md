@@ -280,7 +280,8 @@ session can't be reached this way.
   the ask and detaches. An async question's answer goes in as the reply message
   Codex's own UI writes, into the running turn (`turn/steer`) or as a new turn
   (`turn/start`) when idle. When the reply was typed in Codex instead, the
-  broker sees it in the thread and clears the ask.
+  broker sees it in the thread and clears the ask; it checks again just before
+  sending, so an outside answer never adds a second reply.
 - The broker never decides. With no answer, a malformed answer, a lost
   connection, an error, or a timeout, it sends nothing and the question stays
   in Codex. An answer is taken once and never resent.

@@ -240,7 +240,9 @@ only for a thread whose hook reported a question tool:
   (with the running turn's `expectedTurnId`) or, when idle or when the steer is
   rejected, `turn/start`. Every few seconds the broker reads the latest two
   turns' items (a steered message isn't in a turn's summary); a user message
-  with that reply clears the ask, and so does an unloaded thread.
+  with that reply clears the ask, and so does an unloaded thread. The broker
+  also checks for it before raising the ask and before sending an answer, and
+  sends nothing when it is there.
 
 Server request ids count separately from client ones, so a response is matched
 by id and the absence of `method`. Verified against the app-server schema of
