@@ -81,7 +81,8 @@ class CodexRPC:
                 )
                 while True:
                     response = json.loads(await self.ws.recv())
-                    if response.get("id") != request_id:
+                    # Server requests number their own ids; a response has no method.
+                    if response.get("id") != request_id or "method" in response:
                         continue
                     if "error" in response:
                         raise WireError("native_rejected", "Codex rejected the app-server request")

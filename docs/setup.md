@@ -256,6 +256,42 @@ Tested live on Claude Code 2.1.293. `ask_answer` takes no session credential and
 is not an MCP tool, so agents' tools can't answer; see the protocol's Native
 dialogs section.
 
+### Answering Codex's question dialogs from outside the terminal
+
+Codex's question tools, `request_user_input` (the question dialog, which
+blocks the turn) and `request_user_input_async` (a question that ends the turn
+and waits in the session), work with the `PreToolUse` and `PostToolUse` `.*`
+heartbeat hooks above; nothing else to install. The session must run on the
+Codex app server (the daemon or the desktop app): a `codex --no-daemon`
+session can't be reached this way.
+
+- When the hook sees the tool start (`request_user_input`) or finish
+  (`request_user_input_async`), it asks the broker to watch that one question.
+  The broker reads the thread's status until Codex shows the question, then
+  raises the session's ask from Codex's own request: the question as `text`,
+  its 2 to 4 option labels as `options`, and `native: true`.
+- Answer it the same way as a Claude dialog:
+  `agent-wire answer <session> --ask-at <raised_at> -- Pear`. Any text is the
+  answer: an option's label or free text.
+- For the dialog, the broker attaches to the loaded thread (`thread/resume`
+  with `excludeTurns: true`) only to read its pending request and reply to it,
+  holding one connection while the question waits. The first answer wins: when
+  someone answers in Codex, Codex resolves the request, and the broker clears
+  the ask and detaches. An async question's answer goes in as the reply message
+  Codex's own UI writes, into the running turn (`turn/steer`) or as a new turn
+  (`turn/start`) when idle. When the reply was typed in Codex instead, the
+  broker sees it in the thread and clears the ask.
+- The broker never decides. With no answer, a malformed answer, a lost
+  connection, an error, or a timeout, it sends nothing and the question stays
+  in Codex. An answer is taken once and never resent.
+- Version 1 answers one-question requests. Several questions raise an ask
+  listing them all, without `native`. A question marked `isSecret` raises no
+  ask and is answered in Codex only.
+- The session needs a published report to carry the ask. A broker restart
+  clears the Codex dialog asks it was watching; the questions stay in Codex.
+
+Tested live on Codex 0.160.1 against a separate app server.
+
 The optional skill uses the same instructions for either client. From this
 repository, copy `skills/agent-wire/SKILL.md` into
 `~/.codex/skills/agent-wire/SKILL.md` and/or

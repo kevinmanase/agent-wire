@@ -35,6 +35,9 @@ MODE_CLASSES = {
     "auto": "prompting",
 }
 DIALOGS = ("AskUserQuestion", "ExitPlanMode")
+# Codex's question tools, and the hook event at which each one's question exists or is near.
+BLOCKING, ASYNC = "request_user_input", "request_user_input_async"
+QUESTION_EVENTS = {"PreToolUse": BLOCKING, "PostToolUse": ASYNC}
 APPROVE, KEEP_PLANNING = "Approve", "Keep planning"
 # Below the hook's configured timeout (docs: 86400), so the hook closes its own ask first.
 ANSWER_WAIT = 23 * 3600
@@ -186,6 +189,18 @@ async def run_hook(
         session = await call(state, "session_heartbeat", session_handle=token, **heartbeat)
     if event in ("SessionStart", "UserPromptSubmit"):
         return hook_context(token, session["name"], event, identity_file)
+    item_id = payload.get("tool_use_id")
+    if runtime == "codex" and payload.get("tool_name") == QUESTION_EVENTS.get(event) and item_id:
+        # The broker raises the question's ask and relays only a person's answer. An older
+        # broker without question_watch leaves the question to Codex.
+        with contextlib.suppress(WireError):
+            await call(
+                state,
+                "question_watch",
+                session_handle=token,
+                tool=payload["tool_name"],
+                item_id=item_id,
+            )
     # Heartbeats do not emit context, block a stop, or make permission decisions.
     return {}
 
