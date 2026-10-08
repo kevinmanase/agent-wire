@@ -164,7 +164,8 @@ class Broker:
         async def check(path, rows):
             # A server that can't be read retires nothing.
             with contextlib.suppress(WireError):
-                self.store.retire_unloaded(rows, await self.adapters.loaded_threads(path))
+                if self.store.retire_unloaded(rows, await self.adapters.loaded_threads(path)):
+                    self.wake.set()  # Their queued messages fail.
 
         async with asyncio.TaskGroup() as group:
             for path, rows in self.store.codex_threads().items():
@@ -172,7 +173,9 @@ class Broker:
 
     async def unloaded_checker(self):
         while True:
-            await self.retire_unloaded()
+            # One failed pass must not end the checks.
+            with contextlib.suppress(Exception):
+                await self.retire_unloaded()
             await asyncio.sleep(UNLOADED_CHECK)
 
     async def worker(self):

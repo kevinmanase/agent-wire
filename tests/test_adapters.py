@@ -55,10 +55,15 @@ async def test_loaded_threads_reads_every_page(sockets):
         assert await NativeAdapters().loaded_threads(str(path)) == {"a", "b", "native-thread"}
         # Delivery's check sees a thread on a later page too.
         await NativeAdapters().validate("codex", "native-thread", {"path": str(path)})
-    malformed = {None: ("native-thread", None)}
-    async with unix_serve(lambda ws: codex_server(ws, [], pages=malformed), path):
-        with pytest.raises(Offline, match="malformed"):
-            await NativeAdapters().loaded_threads(str(path))
+    for pages, error in [
+        ({None: ("native-thread", None)}, "malformed"),
+        ({None: ([{"id": "native-thread"}], None)}, "malformed"),
+        ({None: ([], 2)}, "malformed"),
+        ({None: (["a"], "loop"), "loop": (["a"], "loop")}, "did not end"),
+    ]:
+        async with unix_serve(lambda ws, pages=pages: codex_server(ws, [], pages=pages), path):
+            with pytest.raises(Offline, match=error):
+                await NativeAdapters().loaded_threads(str(path))
 
 
 def envelope():

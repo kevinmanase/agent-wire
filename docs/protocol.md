@@ -165,8 +165,9 @@ each app server that has enrolled Codex threads for `thread/loaded/list`, every
 page, and retires, exactly like `retire`, each enrollment whose thread is not
 listed. It never resumes the thread. Other threads on the same server are
 untouched, and a server that can't be reached or read retires nothing. An
-enrollment that re-enrolled or moved to another endpoint during the check
-stays. Reopening an unloaded thread (`codex resume`) enrolls it again through
+enrollment that re-enrolled or refreshed its endpoint during the check stays.
+A restarted server's threads also end with its process, which their hooks
+recorded. Reopening an unloaded thread (`codex resume`) enrolls it again through
 its hook, as a new enrollment with no report. Verified on Codex 0.161.0
 against a scratch app server and broker.
 Enrollments without a recorded process (CLI `register` for Codex, mailbox
