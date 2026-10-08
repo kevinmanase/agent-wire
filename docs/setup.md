@@ -70,8 +70,9 @@ Enroll native sessions using the README's `register` commands. A new
 enrollment revokes the old credential for that native session. After a clear,
 verify the replacement session ID and enroll it separately. In Claude Code and
 `--no-daemon` Codex, enrolling it retires the cleared conversation's
-enrollment. On the Codex app server, which plain `codex` uses, the cleared
-thread stays enrolled until `agent-wire retire` removes it. Old messages are never redirected to the replacement conversation.
+enrollment. On the Codex app server, which plain `codex` uses, the server
+unloads the cleared thread about a minute later, and the broker then retires its
+enrollment (see [protocol](protocol.md#session-reports)). Old messages are never redirected to the replacement conversation.
 
 ## Bind an MCP server to one conversation
 

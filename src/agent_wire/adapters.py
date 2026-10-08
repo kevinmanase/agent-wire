@@ -167,6 +167,17 @@ class NativeAdapters:
         check_socket(path)
         return {"path": path, **process}
 
+    async def loaded_threads(self, path: str) -> set[str]:
+        """Every thread the Codex app server at path has loaded, across all pages."""
+        loaded, params = set(), {}
+        async with CodexRPC(path) as rpc:
+            while True:
+                page = await rpc.request("thread/loaded/list", params)
+                loaded.update(page["data"])
+                if not page.get("nextCursor"):
+                    return loaded
+                params = {"cursor": page["nextCursor"]}
+
     async def deliver(self, agent, envelope: dict, sender_mode: str | None = None):
         endpoint = json.loads(agent["endpoint"])
         await self.validate(agent["runtime"], agent["native_id"], endpoint)

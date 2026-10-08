@@ -243,6 +243,27 @@ class Store:
             (runtime, agent_id, *process, START_SLACK),
         )
 
+    def codex_threads(self) -> dict[str, list]:
+        """Active Codex enrollments, grouped by their app server's socket path."""
+        servers = {}
+        for row in self.db.execute(
+            "SELECT id,native_id,endpoint FROM agents WHERE active=1 AND runtime='codex'"
+        ):
+            path = json.loads(row["endpoint"]).get("path")
+            if isinstance(path, str):
+                servers.setdefault(path, []).append(row)
+        return servers
+
+    def retire_unloaded(self, rows, loaded: set[str]):
+        """Retire, as retire does, each of codex_threads()'s rows whose thread isn't loaded.
+
+        One that re-enrolled or moved to another endpoint since it was read stays.
+        """
+        self.db.executemany(
+            "UPDATE agents SET active=0 WHERE id=? AND active=1 AND endpoint=?",
+            [(row["id"], row["endpoint"]) for row in rows if row["native_id"] not in loaded],
+        )
+
     def register(
         self, name: str, runtime: str, native_id: str, endpoint: dict, cwd="", pid=None
     ) -> dict:
