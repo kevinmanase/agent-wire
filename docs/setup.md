@@ -69,7 +69,7 @@ inbox explicitly. Do not bypass it with terminal pasting.
 Enroll native sessions using the README's `register` commands. A new
 enrollment revokes the old credential for that native session. After a clear,
 verify the replacement session ID and enroll it separately. In Claude Code and
-Codex started with `--no-daemon`, enrolling it retires the cleared conversation's
+`--no-daemon` Codex, enrolling it retires the cleared conversation's
 enrollment. Old messages are never redirected to the replacement conversation.
 
 ## Bind an MCP server to one conversation
@@ -263,7 +263,7 @@ blocks the turn) and `request_user_input_async` (a question that ends the turn
 and waits in the session), work with the `PreToolUse` and `PostToolUse` `.*`
 heartbeat hooks above; nothing else to install. The session must run on the
 Codex app server: the daemon, which plain `codex` uses, or the desktop app.
-A session started with `--no-daemon` can't be reached this way.
+A `--no-daemon` Codex session can't be reached this way.
 
 - When the hook sees the tool start (`request_user_input`) or finish
   (`request_user_input_async`), it asks the broker to watch that one question.

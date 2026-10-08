@@ -56,7 +56,7 @@ def process_starts(pids) -> dict[int, float | None]:
 def is_app_server(pid: int) -> bool:
     """Whether this Codex process is an app server (the daemon or the desktop app's).
 
-    An app server runs many threads at once; Codex started with --no-daemon runs one.
+    An app server runs many threads at once; --no-daemon Codex runs one.
     If ps fails, assume an app server, so nothing is retired.
     """
     try:

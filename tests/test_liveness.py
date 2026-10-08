@@ -133,10 +133,10 @@ def test_a_new_claude_conversation_replaces_the_one_in_its_process(store, proces
     assert store.agent(other["agent"]["id"])["active"] == 1
 
 
-def test_a_new_terminal_codex_thread_replaces_the_one_in_its_process(store, processes):
+def test_a_new_no_daemon_codex_thread_replaces_the_one_in_its_process(store, processes):
     old = enroll(store, "worker", "codex", 100)
     store.session_update(old["session_handle"], task="Ship", status="waiting", ask=ASK)
-    # After /clear, Codex started with --no-daemon enrolls its new thread from the same process.
+    # After /clear, --no-daemon Codex enrolls its new thread from the same process.
     enroll(store, "worker", "codex", 100)
     assert store.agent(old["agent"]["id"])["active"] == 0
     assert [s["report"] for s in store.sessions()["sessions"]] == [None]  # No old ask.
