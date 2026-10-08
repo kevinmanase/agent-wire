@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Agent Wire: local, explicit messaging between coding-agent sessions."""
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
