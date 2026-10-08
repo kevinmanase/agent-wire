@@ -115,6 +115,11 @@ def parser() -> argparse.ArgumentParser:
         "--ask-at", type=float, required=True, help="The ask's raised_at, from sessions"
     )
     answer.add_argument("text", nargs="+", help="An option label or free text, after --")
+    dismiss = commands.add_parser("dismiss", help="Dismiss a stale ask without answering it")
+    dismiss.add_argument("session", help="Session name or enrollment ID")
+    dismiss.add_argument(
+        "--ask-at", type=float, required=True, help="The ask's raised_at, from sessions"
+    )
     return p
 
 
@@ -181,6 +186,8 @@ async def run(args):
             raised_at=args.ask_at,
             answer=" ".join(args.text),
         )
+    if args.command == "dismiss":
+        return await call(state, "ask_dismiss", session=args.session, raised_at=args.ask_at)
     token = read_identity(args.identity)
     if args.command == "report":
         ask = {

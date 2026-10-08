@@ -221,6 +221,13 @@ Codex's question tools work the same way through its app server, with the
 heartbeat hooks; see
 [setup](docs/setup.md#answering-codexs-question-dialogs-from-outside-the-terminal).
 
+To dismiss a stale question you already handled in the agent conversation, run
+`agent-wire dismiss <session> --ask-at <raised_at>`. This clears only that ask
+from the shared report, including any answer not yet relayed. It sends no answer
+or approval to the agent and leaves the native dialog alone. Like `answer`, it
+takes no session credential; local integrations can call `ask_dismiss` with
+`session` and `raised_at`. A newer question is never cleared by an older dismissal.
+
 Write `ticket` so a floor can group every report on the same work: the Linear
 issue key, such as `ENG-2649`, or `<repo>#<number>` for the GitHub issue, such
 as `team-floor#11`, or for the pull request when there is no issue, such as
