@@ -111,6 +111,20 @@ class CodexRPC:
             raise Offline("Codex app-server read failed") from exc
 
 
+async def loaded_threads(rpc: CodexRPC) -> list[str]:
+    """Every thread the app server has loaded, across all pages."""
+    loaded, params = [], {}
+    while True:
+        page = await rpc.request("thread/loaded/list", params)
+        data, cursor = page.get("data"), page.get("nextCursor")
+        if not isinstance(data, list) or not isinstance(cursor, str | None):
+            raise Offline("Codex sent a malformed thread list")
+        loaded += data
+        if cursor is None:
+            return loaded
+        params = {"cursor": cursor}
+
+
 def claude_records(home: Path | None = None) -> list[dict]:
     home = home or Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
     records = []
@@ -148,8 +162,7 @@ class NativeAdapters:
         process = {}
         if runtime == "codex":
             async with CodexRPC(path) as rpc:
-                loaded = (await rpc.request("thread/loaded/list", {}))["data"]
-                if native_id not in loaded:
+                if native_id not in await loaded_threads(rpc):
                     raise Offline("Codex thread is not loaded; Agent Wire does not resume it")
                 await rpc.request("thread/read", {"threadId": native_id, "includeTurns": False})
                 path = rpc.endpoint
@@ -168,15 +181,9 @@ class NativeAdapters:
         return {"path": path, **process}
 
     async def loaded_threads(self, path: str) -> set[str]:
-        """Every thread the Codex app server at path has loaded, across all pages."""
-        loaded, params = set(), {}
+        """Every thread the Codex app server at path has loaded."""
         async with CodexRPC(path) as rpc:
-            while True:
-                page = await rpc.request("thread/loaded/list", params)
-                loaded.update(page["data"])
-                if not page.get("nextCursor"):
-                    return loaded
-                params = {"cursor": page["nextCursor"]}
+            return set(await loaded_threads(rpc))
 
     async def deliver(self, agent, envelope: dict, sender_mode: str | None = None):
         endpoint = json.loads(agent["endpoint"])
@@ -185,8 +192,7 @@ class NativeAdapters:
         if agent["runtime"] == "codex":
             async with CodexRPC(endpoint["path"]) as rpc:
                 # Recheck on the delivery connection; never resume an unloaded conversation.
-                loaded = (await rpc.request("thread/loaded/list", {}))["data"]
-                if agent["native_id"] not in loaded:
+                if agent["native_id"] not in await loaded_threads(rpc):
                     raise Offline("Codex thread unloaded before delivery")
                 await rpc.request(
                     "turn/start",
@@ -261,7 +267,7 @@ class NativeAdapters:
         try:
             async with CodexRPC(path) as rpc:
                 path = rpc.endpoint
-                for native_id in (await rpc.request("thread/loaded/list", {}))["data"][:100]:
+                for native_id in (await loaded_threads(rpc))[:100]:
                     thread = (
                         await rpc.request(
                             "thread/read",

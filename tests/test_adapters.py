@@ -19,8 +19,9 @@ def sockets():
 
 
 async def codex_server(
-    ws, turns, *, loaded=True, version="0.159.0", disconnect=False, source="cli"
+    ws, turns, *, loaded=True, version="0.159.0", disconnect=False, source="cli", pages=None
 ):
+    # pages: cursor -> (thread ids, next cursor), for a paged thread/loaded/list.
     async for text in ws:
         msg = json.loads(text)
         if "id" not in msg:
@@ -29,7 +30,11 @@ async def codex_server(
         if method == "initialize":
             result = {"userAgent": f"codex-tui/{version}"}
         elif method == "thread/loaded/list":
-            result = {"data": ["native-thread"] if loaded else []}
+            if pages is None:
+                result = {"data": ["native-thread"] if loaded else [], "nextCursor": None}
+            else:
+                data, cursor = pages[msg["params"].get("cursor")]
+                result = {"data": data, "nextCursor": cursor}
         elif method == "thread/read":
             result = {"thread": {"id": "native-thread", "source": source}}
         elif method == "turn/start":
@@ -41,6 +46,19 @@ async def codex_server(
         else:
             raise AssertionError(method)
         await ws.send(json.dumps({"id": msg["id"], "result": result}))
+
+
+async def test_loaded_threads_reads_every_page(sockets):
+    path = sockets / "codex.sock"
+    pages = {None: (["a", "b"], "2"), "2": (["native-thread"], None)}
+    async with unix_serve(lambda ws: codex_server(ws, [], pages=pages), path):
+        assert await NativeAdapters().loaded_threads(str(path)) == {"a", "b", "native-thread"}
+        # Delivery's check sees a thread on a later page too.
+        await NativeAdapters().validate("codex", "native-thread", {"path": str(path)})
+    malformed = {None: ("native-thread", None)}
+    async with unix_serve(lambda ws: codex_server(ws, [], pages=malformed), path):
+        with pytest.raises(Offline, match="malformed"):
+            await NativeAdapters().loaded_threads(str(path))
 
 
 def envelope():

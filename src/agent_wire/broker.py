@@ -159,19 +159,16 @@ class Broker:
                     group.create_task(deliver_one(row))
 
     async def retire_unloaded(self):
-        """Retire each Codex enrollment whose app server no longer has its thread loaded.
+        """Retire Codex enrollments whose app server unloaded their thread (protocol.md)."""
 
-        The app server unloads a thread a minute after its last client leaves it: after /clear
-        on a thread with turns, when its TUI exits, or when the server restarts. Agent Wire never
-        resumes a thread, so nothing could deliver to it. A server that can't be read retires
-        nothing, and another thread on the same server is untouched.
-        """
-        for path, rows in self.store.codex_threads().items():
-            try:
-                loaded = await self.adapters.loaded_threads(path)
-            except (WireError, OSError, KeyError, TypeError):
-                continue
-            self.store.retire_unloaded(rows, loaded)
+        async def check(path, rows):
+            # A server that can't be read retires nothing.
+            with contextlib.suppress(WireError):
+                self.store.retire_unloaded(rows, await self.adapters.loaded_threads(path))
+
+        async with asyncio.TaskGroup() as group:
+            for path, rows in self.store.codex_threads().items():
+                group.create_task(check(path, rows))
 
     async def unloaded_checker(self):
         while True:

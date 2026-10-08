@@ -158,18 +158,17 @@ because it runs many threads: the broker reads the process's command line with
 desktop app's) retires nothing.
 Instead, an app server ends a thread itself: about a minute after its last client
 leaves it, it unloads the thread (`thread/status/changed` to `notLoaded`, then
-`thread/closed`). That happens after `/clear` in a thread that has had a turn,
-when its TUI exits, and for every thread when the server restarts, after which
-the TUI shows the conversation as unavailable. Every 15 seconds the broker asks
+`thread/closed`): after `/clear` in a thread that has had a turn, when its TUI
+exits, or, for every thread, when the server restarts (the TUI then shows the
+conversation as unavailable). Every 15 seconds the broker asks
 each app server that has enrolled Codex threads for `thread/loaded/list`, every
 page, and retires, exactly like `retire`, each enrollment whose thread is not
 listed. It never resumes the thread. Other threads on the same server are
 untouched, and a server that can't be reached or read retires nothing. An
 enrollment that re-enrolled or moved to another endpoint during the check
 stays. Reopening an unloaded thread (`codex resume`) enrolls it again through
-its hook, as a new enrollment with no report. So after `/clear` in plain
-`codex`, the cleared thread leaves the list within about 75 seconds. Verified
-on Codex 0.161.0 against a scratch app server and broker.
+its hook, as a new enrollment with no report. Verified on Codex 0.161.0
+against a scratch app server and broker.
 Enrollments without a recorded process (CLI `register` for Codex, mailbox
 sessions, older enrollments) are unchanged until a hook refreshes them. If the
 start time can't be read, the session stays active.
@@ -228,8 +227,9 @@ The adapter was originally verified against **app-server 0.159.0**. Native
 versions are not gated; the app-server version may differ from the installed CLI.
 It uses the local control socket via WebSocket, initializes the connection, checks `thread/loaded/list`, and reads the identified thread. It
 does not resume an unloaded thread; it attaches to a loaded one only for a
-question dialog, as below. Every 15 seconds it also pages `thread/loaded/list`
-to retire enrollments whose thread the server unloaded (see Session reports).
+question dialog, as below. It also retires enrollments whose thread the server
+unloaded (see Session reports). Every read of `thread/loaded/list` follows
+`nextCursor` to the last page.
 
 Codex question dialogs (see Native dialogs) use more of the app server, and
 only for a thread whose hook reported a question tool:

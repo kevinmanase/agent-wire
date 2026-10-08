@@ -1,15 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-import json
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
-from websockets.asyncio.server import unix_serve
 
-from agent_wire.adapters import NativeAdapters
 from agent_wire.broker import Broker
 from agent_wire.errors import Offline, WireError
 from agent_wire.hooks import run_hook
@@ -220,12 +216,13 @@ async def test_a_codex_thread_its_app_server_unloaded_retires(store):
     enroll(store, "unrecorded", "codex")  # No endpoint path.
     queued = send(store, current, cleared)
     servers = AppServers({"/daemon": {"current", "loaded elsewhere"}, "/desktop": Offline("down")})
-    await Broker(store, servers).retire_unloaded()
+    broker = Broker(store, servers)
+    await broker.retire_unloaded()
     assert active(store) == {"current", "desktop", "claude", "unrecorded"}
     store.expire()
     assert store.status(current["session_handle"], queued["id"])["status"] == "failed"
-    servers.servers["/desktop"] = KeyError("data")  # A malformed reply retires nothing.
-    await Broker(store, servers).retire_unloaded()
+    servers.servers["/desktop"] = Offline("malformed")  # A malformed reply retires nothing.
+    await broker.retire_unloaded()
     assert active(store) == {"current", "desktop", "claude", "unrecorded"}
 
 
@@ -238,26 +235,6 @@ def test_a_codex_thread_that_moved_or_reenrolled_since_the_check_stays(store):
     assert active(store) == {"moved", "again"}
     assert store.agent(again["agent"]["id"])["active"] == 0
     assert store.agent(renewed["agent"]["id"])["active"] == 1
-
-
-async def test_loaded_threads_reads_every_page():
-    pages = {None: (["a", "b"], "2"), "2": (["c"], None)}
-
-    async def serve(ws):
-        async for text in ws:
-            msg = json.loads(text)
-            if msg["method"] == "thread/loaded/list":
-                data, cursor = pages[msg["params"].get("cursor")]
-                await ws.send(
-                    json.dumps({"id": msg["id"], "result": {"data": data, "nextCursor": cursor}})
-                )
-            elif "id" in msg:
-                await ws.send(json.dumps({"id": msg["id"], "result": {}}))
-
-    with tempfile.TemporaryDirectory() as directory:
-        path = str(Path(directory) / "codex.sock")
-        async with unix_serve(serve, path):
-            assert await NativeAdapters().loaded_threads(path) == {"a", "b", "c"}
 
 
 async def test_codex_hook_records_its_runtime_process(environment, monkeypatch):
