@@ -223,8 +223,8 @@ class Store:
     def replaces(self, agent_id: str, runtime: str, process: tuple) -> bool:
         """Whether this session ends an earlier one in its process, after /clear or /resume.
 
-        Claude Code runs one conversation per process and terminal Codex one thread; a Codex
-        app server runs many. Reads ps only when an earlier one exists.
+        Claude Code runs one conversation per process and --no-daemon Codex one thread;
+        a Codex app server runs many. Reads ps only when an earlier one exists.
         """
         if (
             runtime not in ("claude", "codex")
