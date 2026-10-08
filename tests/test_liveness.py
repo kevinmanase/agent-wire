@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
+import asyncio
 import os
 import subprocess
 import sys
@@ -7,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from agent_wire.broker import Broker
-from agent_wire.errors import WireError
+from agent_wire.errors import Offline, WireError
 from agent_wire.hooks import run_hook
 from agent_wire.processes import ancestor, is_app_server, process_starts, ps
 from agent_wire.store import Store
@@ -189,6 +190,76 @@ async def test_delivery_to_an_exited_session_fails_without_writing(store, proces
     await Broker(store, adapter).deliver_pending()
     assert adapter.delivered == []
     assert store.status(a["session_handle"], message["id"])["status"] == "failed"
+
+
+class AppServers(Adapter):
+    """Fake Codex app servers: socket path -> loaded thread ids, or the error reading it raises."""
+
+    def __init__(self, servers):
+        super().__init__()
+        self.servers = servers
+
+    async def loaded_threads(self, path):
+        if isinstance(loaded := self.servers[path], Exception):
+            raise loaded
+        return loaded
+
+
+def codex(store, name, path):
+    return store.register(name, "codex", name, {"path": path})
+
+
+async def test_a_codex_thread_its_app_server_unloaded_retires(store):
+    # The daemon unloads a thread a minute after /clear; the TUI's new thread stays loaded.
+    cleared, current = codex(store, "cleared", "/daemon"), codex(store, "current", "/daemon")
+    codex(store, "desktop", "/desktop")
+    enroll(store, "claude", "claude")
+    enroll(store, "unrecorded", "codex")  # No endpoint path.
+    queued = send(store, current, cleared)
+    servers = AppServers({"/daemon": {"current", "loaded elsewhere"}, "/desktop": Offline("down")})
+    broker = Broker(store, servers)
+    await broker.retire_unloaded()
+    assert active(store) == {"current", "desktop", "claude", "unrecorded"}
+    assert broker.wake.is_set()  # So the worker fails what was queued to them.
+    store.expire()
+    assert store.status(current["session_handle"], queued["id"])["status"] == "failed"
+    servers.servers["/desktop"] = Offline("malformed")  # A malformed reply retires nothing.
+    await broker.retire_unloaded()
+    assert active(store) == {"current", "desktop", "claude", "unrecorded"}
+
+
+def test_a_codex_thread_refreshed_or_reenrolled_since_the_check_stays(store):
+    moved, again = codex(store, "moved", "/daemon"), codex(store, "again", "/daemon")
+    resumed = codex(store, "resumed", "/daemon")
+    rows = store.codex_threads()["/daemon"]
+    store.refresh_endpoint(moved["session_handle"], {"path": "/restarted"}, "")
+    # codex resume loaded it again after the list was read; its hook refreshes the same path.
+    store.refresh_endpoint(resumed["session_handle"], {"path": "/daemon"}, "")
+    renewed = codex(store, "again", "/daemon")
+    assert store.retire_unloaded(rows, set()) == 0
+    assert active(store) == {"moved", "again", "resumed"}
+    assert store.agent(again["agent"]["id"])["active"] == 0
+    assert store.agent(renewed["agent"]["id"])["active"] == 1
+
+
+async def test_a_failed_check_does_not_end_the_checks(store, monkeypatch):
+    codex(store, "cleared", "/daemon")
+    servers = AppServers({"/daemon": set()})
+    broker, calls, again = Broker(store, servers), [], asyncio.Event()
+
+    async def loaded_threads(path):
+        calls.append(path)
+        if len(calls) == 1:
+            raise RuntimeError("unexpected")
+        again.set()
+        return set()
+
+    servers.loaded_threads = loaded_threads
+    monkeypatch.setattr("agent_wire.broker.UNLOADED_CHECK", 0)
+    checker = asyncio.create_task(broker.unloaded_checker())
+    await asyncio.wait_for(again.wait(), 5)
+    checker.cancel()
+    assert active(store) == set()
 
 
 async def test_codex_hook_records_its_runtime_process(environment, monkeypatch):

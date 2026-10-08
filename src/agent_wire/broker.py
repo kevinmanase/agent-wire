@@ -15,6 +15,9 @@ from .permissions import sender_mode
 from .questions import CodexQuestions
 from .store import Store, bounded_text
 
+# Seconds between checks that each enrolled Codex thread is still loaded in its app server.
+UNLOADED_CHECK = 15
+
 
 class Broker:
     def __init__(self, store: Store, adapters=None):
@@ -155,6 +158,26 @@ class Broker:
                 for row in rows:
                     group.create_task(deliver_one(row))
 
+    async def retire_unloaded(self):
+        """Retire Codex enrollments whose app server unloaded their thread (protocol.md)."""
+
+        async def check(path, rows):
+            # A server that can't be read retires nothing.
+            with contextlib.suppress(WireError):
+                if self.store.retire_unloaded(rows, await self.adapters.loaded_threads(path)):
+                    self.wake.set()  # Their queued messages fail.
+
+        async with asyncio.TaskGroup() as group:
+            for path, rows in self.store.codex_threads().items():
+                group.create_task(check(path, rows))
+
+    async def unloaded_checker(self):
+        while True:
+            # One failed pass must not end the checks.
+            with contextlib.suppress(Exception):
+                await self.retire_unloaded()
+            await asyncio.sleep(UNLOADED_CHECK)
+
     async def worker(self):
         while True:
             self.wake.clear()
@@ -222,14 +245,18 @@ async def serve(state: Path):
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
-        worker = asyncio.create_task(broker.worker())
+        tasks = [
+            asyncio.create_task(broker.worker()),
+            asyncio.create_task(broker.unloaded_checker()),
+        ]
         try:
             async with server:
                 await stop.wait()
         finally:
-            worker.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await worker
+            for task in tasks:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
             await broker.questions.close()
             store.close()
             path.unlink(missing_ok=True)

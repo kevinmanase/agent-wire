@@ -192,7 +192,11 @@ class Store:
             );
         """)
         # The runtime's process and its start time; a reused pid has a different start.
-        self.add_missing_columns("agents", {"mode": "TEXT", "pid": "INTEGER", "started": "REAL"})
+        self.add_missing_columns(
+            "agents",
+            # How many times its endpoint was revalidated, so a check can tell it reloaded.
+            {"mode": "TEXT", "pid": "INTEGER", "started": "REAL", "refreshes": "INTEGER"},
+        )
         self.add_missing_columns("session_reports", REPORT_COLUMNS)
         self.db.execute(
             "UPDATE messages SET status='unknown', detail='Broker restarted during delivery' "
@@ -242,6 +246,28 @@ class Store:
             f"UPDATE agents SET active=0 WHERE {SAME_PROCESS}",
             (runtime, agent_id, *process, START_SLACK),
         )
+
+    def codex_threads(self) -> dict[str, list]:
+        """Active Codex enrollments, grouped by their app server's socket path."""
+        servers = {}
+        for row in self.db.execute(
+            "SELECT id,native_id,endpoint,refreshes FROM agents WHERE active=1 AND runtime='codex'"
+        ):
+            endpoint = json.loads(row["endpoint"])
+            if isinstance(endpoint, dict) and isinstance(path := endpoint.get("path"), str):
+                servers.setdefault(path, []).append(row)
+        return servers
+
+    def retire_unloaded(self, rows, loaded: set[str]) -> int:
+        """Retire, as retire does, each of codex_threads()'s rows whose thread isn't loaded.
+
+        One that re-enrolled or was refreshed since it was read stays: its thread may have
+        loaded again after the list was taken. Returns how many retired.
+        """
+        return self.db.executemany(
+            "UPDATE agents SET active=0 WHERE id=? AND active=1 AND refreshes IS ?",
+            [(row["id"], row["refreshes"]) for row in rows if row["native_id"] not in loaded],
+        ).rowcount
 
     def register(
         self, name: str, runtime: str, native_id: str, endpoint: dict, cwd="", pid=None
@@ -502,7 +528,8 @@ class Store:
             # exit check. A Codex hook sends no pid when its own ps fails.
             process = (agent["pid"], agent["started"])
         self.db.execute(
-            "UPDATE agents SET endpoint=?,cwd=?,pid=?,started=? WHERE id=?",
+            "UPDATE agents SET endpoint=?,cwd=?,pid=?,started=?,"
+            "refreshes=COALESCE(refreshes,0)+1 WHERE id=?",
             (json.dumps(endpoint), cwd, *process, agent["id"]),
         )
         if self.replaces(agent["id"], agent["runtime"], process):
