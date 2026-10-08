@@ -150,7 +150,7 @@ heartbeat. A missing process, or a reused PID whose start time differs by more
 than a minute (Linux start times shift when the clock steps), retires the
 enrollment exactly like `retire`, and its queued messages fail.
 Claude Code runs one conversation per process, and `/clear` or `/resume` switches
-the conversation in it. Terminal Codex (`codex --no-daemon`) runs one thread the
+the conversation in it. Codex started with `--no-daemon` runs one thread the
 same way. So when such a session enrolls or refreshes, any other active
 enrollment of its runtime from the same process is retired too. A Codex app
 server is exempt, because it runs many threads: the broker reads the process's

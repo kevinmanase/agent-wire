@@ -248,7 +248,7 @@ optional [reporting skill](skills/agent-wire/SKILL.md) for both agents.
 - Messages persist across broker restarts. Recipients explicitly enroll; discovery alone does not enroll them.
 - Codex messages arrive as tool output. Claude messages use its peer inbox and keep its inbound controls.
 - Native adapters never resume old conversations or launch new agents. Re-enrollment retires the previous credential and address.
-- A session ends when its Claude Code or Codex process exits. The broker checks the recorded process ID and start time locally whenever it lists or routes, and retires the session exactly like `retire`. After `/clear`, a new Claude Code or terminal Codex (`--no-daemon`) session replaces the old one from the same process.
+- A session ends when its Claude Code or Codex process exits. The broker checks the recorded process ID and start time locally whenever it lists or routes, and retires the session exactly like `retire`. After `/clear`, a new Claude Code session, or a Codex session started with `--no-daemon`, replaces the old one from the same process.
 - A transport failure after writing begins becomes `unknown`. It is not automatically retried.
 - Reuse an idempotency key for a retry of the same send. Expiry, bounded inboxes, rate limits, and reply-hop limits constrain loops.
 - Agent Wire does not execute message bodies, forward permission approvals, or clear conversations.

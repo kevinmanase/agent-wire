@@ -84,7 +84,7 @@ async def test_codex_subagent_thread_does_not_enroll(environment, monkeypatch):
         return {"sessions": [subagent]}
 
     monkeypatch.setattr("agent_wire.hooks.NativeAdapters.discover", discover)
-    # Its parent runs in the same terminal Codex process, which it must not replace.
+    # Its parent runs in the same --no-daemon Codex process, which it must not replace.
     monkeypatch.setattr("agent_wire.hooks.ancestor", lambda name: 100)
     payload = {"session_id": "sub", "hook_event_name": "SessionStart"}
     assert await run_hook(state, "codex", payload) == {}

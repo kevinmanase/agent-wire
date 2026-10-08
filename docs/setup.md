@@ -69,7 +69,7 @@ inbox explicitly. Do not bypass it with terminal pasting.
 Enroll native sessions using the README's `register` commands. A new
 enrollment revokes the old credential for that native session. After a clear,
 verify the replacement session ID and enroll it separately. In Claude Code and
-terminal Codex (`--no-daemon`), enrolling it retires the cleared conversation's
+Codex started with `--no-daemon`, enrolling it retires the cleared conversation's
 enrollment. Old messages are never redirected to the replacement conversation.
 
 ## Bind an MCP server to one conversation
@@ -193,7 +193,7 @@ Add PreToolUse and PermissionRequest using the PostToolUse entry's shape.
 Hooks run synchronously, do bounded work, and fail open. Claude child hooks
 carrying `agent_id` are ignored because they share the parent's `session_id`.
 Codex subagent threads are not enrolled either: they run in the parent's
-process, so enrolling one would retire a terminal Codex parent.
+process, so enrolling one would retire a `--no-daemon` Codex parent.
 Review the new Codex definitions in `/hooks`; earlier approval of SessionStart
 does not trust newly added events. Existing conversations need their runtime
 to load the new MCP tool definitions; use its normal reconnect/reload controls.
@@ -262,8 +262,8 @@ Codex's question tools, `request_user_input` (the question dialog, which
 blocks the turn) and `request_user_input_async` (a question that ends the turn
 and waits in the session), work with the `PreToolUse` and `PostToolUse` `.*`
 heartbeat hooks above; nothing else to install. The session must run on the
-Codex app server (the daemon or the desktop app): a `codex --no-daemon`
-session can't be reached this way.
+Codex app server: the daemon, which plain `codex` uses, or the desktop app.
+A session started with `--no-daemon` can't be reached this way.
 
 - When the hook sees the tool start (`request_user_input`) or finish
   (`request_user_input_async`), it asks the broker to watch that one question.
