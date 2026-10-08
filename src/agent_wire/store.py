@@ -487,6 +487,20 @@ class Store:
             )
         raise WireError("already_answered", "That ask already has an answer")
 
+    def dismiss(self, session: str, raised_at: float) -> dict:
+        """Clear a person's selected ask without answering it or refreshing the agent's report."""
+        check_raised_at(raised_at)
+        bounded_text(session, "session", 200)
+        agent = self.resolve(session)
+        cleared = "".join(f"{key}=NULL," for key in ask_columns(None, 0))
+        if not self.db.execute(
+            f"UPDATE session_reports SET {cleared}ask_answer=NULL "
+            "WHERE agent_id=? AND ask_raised_at=?",
+            (agent["id"], raised_at),
+        ).rowcount:
+            raise WireError("ask_closed", "That ask was answered, cleared, or replaced")
+        return {"session": agent["name"], "raised_at": raised_at, "dismissed": True}
+
     def clear_codex_dialogs(self):
         """Clear Codex dialog asks. The broker that watched them is gone, so none is answerable."""
         cleared = "".join(f"{key}=NULL," for key in ask_columns(None, 0))

@@ -78,6 +78,65 @@ def test_a_new_ask_drops_an_untaken_answer(store):
     assert store.ask_poll(a["session_handle"], raised_at=later) == {"open": True, "answer": None}
 
 
+@pytest.mark.parametrize("native", [True, False])
+def test_dismiss_clears_only_the_matching_ask_without_changing_the_report(store, native):
+    a, raised = asking(store, {**ASK, "native": native, "options": ["Red", "Blue"]})
+    before = store.session(a["agent"]["id"])
+    store.clock = lambda: raised + 600
+    assert store.dismiss(a["agent"]["id"], raised) == {
+        "session": "a",
+        "raised_at": raised,
+        "dismissed": True,
+    }
+    after = store.session(a["agent"]["id"])
+    assert after["report"] == {**before["report"], "ask": None}
+    assert after["last_seen"] == before["last_seen"]
+    assert store.ask_poll(a["session_handle"], raised_at=raised) == {"open": False, "answer": None}
+    # Repeated and stale dismissals must leave a later question alone, even with the same text.
+    with pytest.raises(WireError, match="cleared") as closed:
+        store.dismiss("a", raised)
+    assert closed.value.code == "ask_closed"
+    newer = store.session_ask(a["session_handle"], ask={**ASK, "native": native})
+    with pytest.raises(WireError) as stale:
+        store.dismiss("a", raised)
+    assert stale.value.code == "ask_closed"
+    assert store.session(a["agent"]["id"])["report"]["ask"] == newer["report"]["ask"]
+
+
+def test_dismiss_discards_an_answer_that_has_not_been_relayed(store):
+    a, raised = asking(store)
+    store.answer("a", raised, "Red")
+    store.dismiss("a", raised)
+    assert store.ask_poll(a["session_handle"], raised_at=raised) == {"open": False, "answer": None}
+    with pytest.raises(WireError) as closed:
+        store.answer("a", raised, "Blue")
+    assert closed.value.code == "ask_closed"
+
+
+@pytest.mark.parametrize("session,raised", [("", 1), ([], 1), ("a", None), ("a", True), ("a", "1")])
+def test_dismiss_requires_a_session_and_question_timestamp(store, session, raised):
+    asking(store)
+    with pytest.raises(WireError) as invalid:
+        store.dismiss(session, raised)
+    assert invalid.value.code == "invalid_input"
+
+
+async def test_dismiss_command_clears_an_ask_without_a_session_credential(environment):
+    state, store = environment
+    a, raised = asking(store)
+    for token in (a["session_handle"], enroll(store, "peer")["session_handle"], None):
+        with pytest.raises(WireError) as refused:
+            await call(state, "ask_dismiss", session="a", raised_at=raised, session_handle=token)
+        assert refused.value.code == "forbidden"
+    assert store.session(a["agent"]["id"])["report"]["ask"] is not None
+    assert await cli(state, "dismiss", "a", "--ask-at", repr(raised)) == {
+        "session": "a",
+        "raised_at": raised,
+        "dismissed": True,
+    }
+    assert store.ask_poll(a["session_handle"], raised_at=raised) == {"open": False, "answer": None}
+
+
 def test_only_a_native_ask_takes_an_answer(store):
     a, raised = asking(store, {key: ASK[key] for key in ("to", "text", "kind")})
     with pytest.raises(WireError) as refused:
@@ -231,6 +290,17 @@ async def test_without_an_answer_the_hook_decides_nothing(environment):
     newer = store.session_ask(a["session_handle"], ask={**ASK, "text": "Something else?"})
     assert await asyncio.wait_for(task, 5) == {}
     assert store.session(a["agent"]["id"])["report"]["ask"] == newer["report"]["ask"]
+
+
+@pytest.mark.parametrize("tool", ["AskUserQuestion", "ExitPlanMode"])
+async def test_dismissing_a_claude_dialog_leaves_the_native_decision_alone(environment, tool):
+    state, store = environment
+    a = reporting(state, store)
+    task = asyncio.create_task(answer_hook(state, payload(a, tool), poll=0.01))
+    ask = await raised_ask(store, a)
+    await call(state, "ask_dismiss", session="a", raised_at=ask["raised_at"])
+    assert await asyncio.wait_for(task, 5) == {}
+    assert store.session(a["agent"]["id"])["report"]["ask"] is None
 
 
 async def test_a_multi_question_dialog_is_shown_but_answered_in_the_terminal(environment):

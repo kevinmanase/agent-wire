@@ -311,6 +311,21 @@ def async_question(title="Which fruit?", options=("Apple", "Pear")):
     }
 
 
+@pytest.mark.parametrize("tool", ["request_user_input", "request_user_input_async"])
+async def test_dismissing_a_codex_question_stops_watching_without_sending_an_answer(codex, tool):
+    broker, store, fake, a = codex
+    if tool == "request_user_input_async":
+        fake.status = IDLE
+        fake.turns[0]["items"] = [async_question()]
+    await watch(broker, a, tool)
+    ask = await raised_ask(store, a)
+    await broker.call("ask_dismiss", {"session": "a", "raised_at": ask["raised_at"]})
+    await asyncio.wait_for(settled(broker), 5)
+    assert ask_of(store, a) is None
+    assert fake.replies == []
+    assert not {"turn/start", "turn/steer"} & set(fake.methods())
+
+
 @pytest.mark.parametrize("status,method", [(IDLE, "turn/start"), (RUNNING, "turn/steer")])
 async def test_an_async_answer_goes_in_as_a_user_message(codex, status, method):
     broker, store, fake, a = codex
